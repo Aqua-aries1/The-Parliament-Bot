@@ -17,6 +17,14 @@ const {
     handlePressureInteraction,
 } = require('./pressureRouletteGame');
 const {
+    handleLiarsBarInteraction,
+    RENAME_MODAL_PREFIX: LIARS_BAR_RENAME_MODAL_PREFIX,
+} = require('./liarsBarGame');
+const {
+    handleLiarsDiceInteraction,
+    RENAME_MODAL_PREFIX: LIARS_DICE_RENAME_MODAL_PREFIX,
+} = require('./liarsDiceGame');
+const {
     CHANNEL_ACCESS_CUSTOM_ID_PREFIX,
     CHANNEL_ACCESS_MODAL_ID_PREFIX,
     handleChannelAccessInteraction,
@@ -62,6 +70,40 @@ const ROUTES = Object.freeze({
         penalty_mute: { component: 'button', partCount: 2 },
         penalty_rename: { component: 'button', partCount: 2 },
     },
+    liars_bar: {
+        join: { component: 'button', partCount: 2 },
+        leave: { component: 'button', partCount: 2 },
+        start: { component: 'button', partCount: 2 },
+        cancel: { component: 'button', partCount: 2 },
+        play_card: { component: 'button', partCount: 3, tokenIndex: 2 },
+        play_select: { component: 'string', partCount: 3, tokenIndex: 2 },
+        confirm_play: { component: 'button', partCount: 3, tokenIndex: 2 },
+        challenge: { component: 'button', partCount: 3, tokenIndex: 2 },
+        refresh: { component: 'button', partCount: 2 },
+        item_help: { component: 'button', partCount: 3 },
+        surrender: { component: 'button', partCount: 2 },
+        penalty_mute: { component: 'button', partCount: 2 },
+        penalty_rename: { component: 'button', partCount: 2 },
+    },
+    liars_dice: {
+        join: { component: 'button', partCount: 2 },
+        leave: { component: 'button', partCount: 2 },
+        start: { component: 'button', partCount: 2 },
+        cancel: { component: 'button', partCount: 2 },
+        bid: { component: 'button', partCount: 3, tokenIndex: 2 },
+        bid_count: { component: 'string', partCount: 3, tokenIndex: 2 },
+        bid_face: { component: 'string', partCount: 3, tokenIndex: 2 },
+        bid_confirm: { component: 'button', partCount: 3, tokenIndex: 2 },
+        open: { component: 'button', partCount: 3, tokenIndex: 2 },
+        spot_on: { component: 'button', partCount: 3, tokenIndex: 2 },
+        spot_on_go: { component: 'button', partCount: 3, tokenIndex: 2 },
+        look_dice: { component: 'button', partCount: 3 },
+        refresh: { component: 'button', partCount: 2 },
+        item_help: { component: 'button', partCount: 3 },
+        surrender: { component: 'button', partCount: 2 },
+        penalty_mute: { component: 'button', partCount: 2 },
+        penalty_rename: { component: 'button', partCount: 2 },
+    },
 });
 
 const DOWNSTREAM_HANDLERS = Object.freeze({
@@ -69,6 +111,8 @@ const DOWNSTREAM_HANDLERS = Object.freeze({
     bomb: handleBombInteraction,
     duel: handleDuelInteraction,
     devil_roulette: handleDevilRouletteInteraction,
+    liars_bar: handleLiarsBarInteraction,
+    liars_dice: handleLiarsDiceInteraction,
 });
 
 function componentKind(interaction) {
@@ -83,7 +127,7 @@ function parseMysteryCustomId(customId, kind) {
     }
 
     const parts = customId.split(':');
-    const routeMatch = /^mystery_(roulette|bomb|duel|devil_roulette)_([a-z_]+)$/.exec(parts[0]);
+    const routeMatch = /^mystery_(roulette|bomb|duel|devil_roulette|liars_bar|liars_dice)_([a-z_]+)$/.exec(parts[0]);
     if (!routeMatch) return { valid: false, parts };
 
     const [, type, action] = routeMatch;
@@ -159,6 +203,16 @@ async function handleMysteryInteraction(interaction) {
     // 恶魔轮盘改名惩罚 Modal（胜者自定义败者昵称，走新游戏实例内的惩罚流）。
     if (interaction.isModalSubmit?.() && interaction.customId.startsWith(DEVIL_ROULETTE_RENAME_MODAL_PREFIX)) {
         return handleDevilRouletteInteraction(interaction, null);
+    }
+
+    // 骗子酒馆改名惩罚 Modal（惩罚决定人自定义出局者昵称）。
+    if (interaction.isModalSubmit?.() && interaction.customId.startsWith(LIARS_BAR_RENAME_MODAL_PREFIX)) {
+        return handleLiarsBarInteraction(interaction, null);
+    }
+
+    // 骗子骰子改名惩罚 Modal。
+    if (interaction.isModalSubmit?.() && interaction.customId.startsWith(LIARS_DICE_RENAME_MODAL_PREFIX)) {
+        return handleLiarsDiceInteraction(interaction, null);
     }
 
     const kind = componentKind(interaction);

@@ -11,6 +11,8 @@ const { startBomb } = require('../services/bombGame');
 const { startDuel } = require('../services/duelGame');
 const { startDevilRoulette } = require('../services/devilRouletteGame');
 const { startPressureRoulette } = require('../services/pressureRouletteGame');
+const { startLiarsBar } = require('../services/liarsBarGame');
+const { startLiarsDice } = require('../services/liarsDiceGame');
 const { getNames } = require('../services/namePoolStore');
 const { resolveMysterySettings } = require('../services/channelAccessService');
 const { defaultChannelAccessStore } = require('../utils/channelAccessStore');
@@ -24,6 +26,8 @@ const SUBCOMMAND_BOMB = MYSTERY_GAMES.BOMB;
 const SUBCOMMAND_DUEL = MYSTERY_GAMES.DUEL;
 const SUBCOMMAND_DEVIL_ROULETTE = MYSTERY_GAMES.DEVIL_ROULETTE;
 const SUBCOMMAND_PRESSURE = MYSTERY_GAMES.PRESSURE;
+const SUBCOMMAND_LIARS_BAR = MYSTERY_GAMES.LIARS_BAR;
+const SUBCOMMAND_LIARS_DICE = MYSTERY_GAMES.LIARS_DICE;
 const VALID_SUBCOMMANDS = MYSTERY_GAME_NAMES;
 // 传炸弹用的是跨重启持久化的独立冷却存储，其余游戏走内存冷却。
 const IN_MEMORY_COOLDOWN_SUBCOMMANDS = new Set(
@@ -35,6 +39,8 @@ const DEFERRED_COOLDOWN_SUBCOMMANDS = new Set([
     SUBCOMMAND_DUEL,
     SUBCOMMAND_DEVIL_ROULETTE,
     SUBCOMMAND_PRESSURE,
+    SUBCOMMAND_LIARS_BAR,
+    SUBCOMMAND_LIARS_DICE,
 ]);
 const SELF_TIMEOUT_DURATION_MS = 5 * 60 * 1000;
 const SELF_TIMEOUT_REASON = '神秘指令：自刎归天';
@@ -77,7 +83,13 @@ const data = new SlashCommandBuilder()
             .setRequired(false)))
     .addSubcommand(subcommand => subcommand
         .setName(SUBCOMMAND_PRESSURE)
-        .setDescription('参加一场加压俄罗斯轮盘，自己往枪里加子弹'));
+        .setDescription('参加一场加压俄罗斯轮盘，自己往枪里加子弹'))
+    .addSubcommand(subcommand => subcommand
+        .setName(SUBCOMMAND_LIARS_BAR)
+        .setDescription('参加一场骗子酒馆：盖牌、撒谎、开牌（2-4 人卡牌吹牛）'))
+    .addSubcommand(subcommand => subcommand
+        .setName(SUBCOMMAND_LIARS_DICE)
+        .setDescription('参加一场骗子骰子：叫点、加注、开牌数骰（2-4 人骰子吹牛）'));
 
 function botHasPermission(interaction, permission) {
     return interaction.guild.members.me?.permissions?.has(permission) === true;
@@ -208,6 +220,12 @@ async function startMultiplayerGame(interaction, subcommand, onGameStarted, cool
     if (subcommand === SUBCOMMAND_PRESSURE) {
         return services.startPressureRoulette(interaction, { onGameStarted });
     }
+    if (subcommand === SUBCOMMAND_LIARS_BAR) {
+        return services.startLiarsBar(interaction, { onGameStarted });
+    }
+    if (subcommand === SUBCOMMAND_LIARS_DICE) {
+        return services.startLiarsDice(interaction, { onGameStarted });
+    }
     if (subcommand === SUBCOMMAND_DEVIL_ROULETTE) {
         return services.startDevilRoulette(interaction, interaction.options.getUser('对手'), { onGameStarted });
     }
@@ -244,6 +262,8 @@ function createMysteryCommand({
     startDuel: startDuelGame = startDuel,
     startDevilRoulette: startDevilRouletteGame = startDevilRoulette,
     startPressureRoulette: startPressureRouletteGame = startPressureRoulette,
+    startLiarsBar: startLiarsBarGame = startLiarsBar,
+    startLiarsDice: startLiarsDiceGame = startLiarsDice,
     panelLifecycle = defaultPanelLifecycle,
 } = {}) {
     const services = {
@@ -252,6 +272,8 @@ function createMysteryCommand({
         startDuel: startDuelGame,
         startDevilRoulette: startDevilRouletteGame,
         startPressureRoulette: startPressureRouletteGame,
+        startLiarsBar: startLiarsBarGame,
+        startLiarsDice: startLiarsDiceGame,
     };
 
     async function execute(interaction) {
