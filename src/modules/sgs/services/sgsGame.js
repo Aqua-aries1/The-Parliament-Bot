@@ -32,6 +32,7 @@ const TURN_TIMEOUT_SEC = 180;
 const RESPOND_TIMEOUT_SEC = 45;
 const PENDING_TIMEOUT_SEC = 30;
 const NULLIFY_TIMEOUT_SEC = 12;
+const AUTO_PLAY_GRACE_SEC = 8;
 
 class GameSession {
     constructor(client, game) {
@@ -58,6 +59,19 @@ class GameSession {
         }
     }
 
+    // 在锁内执行游戏动作并兜底 GameError：返回 { ok, message }，
+    // 防止状态推进/超时托管与用户浏览菜单竞态时抛错变成无反馈的未处理 rejection。
+    async runGameAction(fn) {
+        try {
+            await this.withLock(fn);
+            return { ok: true, message: '' };
+        } catch (e) {
+            const friendly = (e instanceof GameError) ? e.message : '操作失败（内部错误），请稍后在主面板重试。';
+            if (!(e instanceof GameError)) console.error('[SGS] Game action error:', e);
+            return { ok: false, message: friendly };
+        }
+    }
+
     recordEvents(events) {
         const nameOf = (pid) => {
             const p = this.game.players.find(x => x.userId === String(pid));
@@ -78,9 +92,23 @@ class GameSession {
         const top = this.game.pendingTop;
         let delaySec = TURN_TIMEOUT_SEC;
         if (top) {
-            if (top.kind === 'nullify') delaySec = NULLIFY_TIMEOUT_SEC;
-            else if (top.kind === 'attack') delaySec = RESPOND_TIMEOUT_SEC;
-            else delaySec = PENDING_TIMEOUT_SEC;
+            if (top.kind === 'nullify') {
+                // 全场无人持有【无懈可击】时走 3 秒过场，别让全桌陪等 12 秒。
+                const anyNullify = this.game.players.some(p => p.alive && p.hand.some(c => c.name === '无懈可击'));
+                delaySec = anyNullify ? NULLIFY_TIMEOUT_SEC : 3;
+            } else if (top.kind === 'attack') {
+                delaySec = RESPOND_TIMEOUT_SEC;
+            } else {
+                delaySec = PENDING_TIMEOUT_SEC;
+            }
+            // 已托管的响应者走短宽限，避免全桌被拖走整套长超时。
+            if (top.deciderId !== '0') {
+                const deciderP = this.game.players.find(p => p.userId === top.deciderId);
+                if (deciderP && deciderP.autoPlay) delaySec = AUTO_PLAY_GRACE_SEC;
+            }
+        } else if (this.game.current && this.game.current.autoPlay) {
+            // 托管玩家的出牌阶段只留 8 秒缓冲即自动结束回合。
+            delaySec = AUTO_PLAY_GRACE_SEC;
         }
 
         this.timer = setTimeout(() => {
@@ -205,24 +233,32 @@ async function handleRecruitAction(session, interaction, action) {
     const userName = interaction.member?.displayName || interaction.user.username;
 
     if (action === 'join') {
-        let msg;
-        await session.withLock(async () => {
-            msg = game.join(userId, userName);
+        const r = await session.runGameAction(() => {
+            const msg = game.join(userId, userName);
             store.save(game.guildId, game.serialize());
+            return msg;
         });
+        if (!r.ok) {
+            await interaction.reply({ content: `❌ ${r.message}`, ephemeral: true });
+            return;
+        }
         await session.render();
-        await interaction.reply({ content: `✓ ${msg}`, ephemeral: true });
+        await interaction.reply({ content: `✓ ${r.message}`, ephemeral: true });
         return;
     }
 
     if (action === 'leave') {
-        let msg;
-        await session.withLock(async () => {
-            msg = game.leave(userId);
+        const r = await session.runGameAction(() => {
+            const msg = game.leave(userId);
             store.save(game.guildId, game.serialize());
+            return msg;
         });
+        if (!r.ok) {
+            await interaction.reply({ content: `❌ ${r.message}`, ephemeral: true });
+            return;
+        }
         await session.render();
-        await interaction.reply({ content: `✓ ${msg}`, ephemeral: true });
+        await interaction.reply({ content: `✓ ${r.message}`, ephemeral: true });
         return;
     }
 
@@ -246,12 +282,17 @@ async function handleRecruitAction(session, interaction, action) {
             return;
         }
         await interaction.deferReply({ ephemeral: true });
-        await session.withLock(async () => {
+        const r = await session.runGameAction(() => {
             const res = game.start(userId);
             session.recordEvents(res.events);
             store.save(game.guildId, game.serialize());
             session.armTimer();
+            return res;
         });
+        if (!r.ok) {
+            await interaction.followup({ content: `❌ ${r.message}`, ephemeral: true });
+            return;
+        }
         await session.render();
         await interaction.followup({ content: '🀄 游戏正式开始！请查看主面板并点击「🃏 我的信息」查阅专属手牌。', ephemeral: true });
         return;
@@ -316,13 +357,18 @@ async function showChooseGeneralModal(session, interaction) {
 
     collector.on('collect', async (selInter) => {
         const picked = selInter.values[0];
-        let msg;
-        await session.withLock(async () => {
-            msg = game.chooseGeneral(userId, picked);
+        const r = await session.runGameAction(() => {
+            const msg = game.chooseGeneral(userId, picked);
             store.save(game.guildId, game.serialize());
+            return msg;
         });
         await session.render();
-        await selInter.update({ content: `✓ ${msg}`, components: [] });
+        if (!r.ok) {
+            // 武将可能刚被抢走：提示后保留菜单，让玩家继续挑别的武将。
+            await selInter.update({ content: `❌ ${r.message}\n请继续从下方下拉列表中挑选你的登场武将：`, components: rows });
+            return;
+        }
+        await selInter.update({ content: `✓ ${r.message}`, components: [] });
         collector.stop();
     });
 }
@@ -396,6 +442,66 @@ async function showRulesHelp(interaction) {
 
 // ------------------------------------------------ 对局主面板动作
 
+// 无懈可击抢断流：从「⚡ 抢出无懈」或「🛡 响应」入口均可进入。
+async function showNullifyFlow(session, interaction) {
+    const game = session.game;
+    const userId = interaction.user.id;
+    const top = game.pendingTop;
+    if (!top || top.kind !== 'nullify') {
+        await interaction.reply({ content: '当前没有等待无懈可击抢断的锦囊。', ephemeral: true });
+        return;
+    }
+    const player = game.players.find(p => p.userId === userId);
+    if (!player || !player.alive) {
+        await interaction.reply({ content: '阵亡角色不能参与抢断。', ephemeral: true });
+        return;
+    }
+    const nullifies = player.hand.map((c, i) => ({ card: c, index: i })).filter(x => x.card.name === '无懈可击');
+    if (!nullifies.length) {
+        await interaction.reply({ content: '你手中没有【无懈可击】。', ephemeral: true });
+        return;
+    }
+
+    const buttons = nullifies.map(x => (
+        new ButtonBuilder()
+            .setCustomId(`sgs_do_nullify_${x.index}`)
+            .setLabel(`⚡ 抢出 ${x.card.short} 抵消`)
+            .setStyle(ButtonStyle.Success)
+    ));
+    const row = new ActionRowBuilder().addComponents(buttons);
+    const reply = await interaction.reply({
+        content: `⚡ 发现锦囊【${top.data.trick_name}】，请抢出【无懈可击】：`,
+        components: [row],
+        ephemeral: true,
+        fetchReply: true,
+    });
+
+    const collector = reply.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 15000,
+    });
+
+    collector.on('collect', async (btnInter) => {
+        const idx = Number(btnInter.customId.replace('sgs_do_nullify_', ''));
+        await btnInter.deferUpdate();
+        const r = await session.runGameAction(() => {
+            const res = game.resolvePending(userId, { type: 'nullify', card_index: idx });
+            session.recordEvents(res.events);
+            store.save(game.guildId, game.serialize());
+            session.armTimer();
+            return res;
+        });
+        await session.render();
+        if (!r.ok) {
+            await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+            collector.stop();
+            return;
+        }
+        await interaction.editReply({ content: '✓ 已成功打出【无懈可击】！', components: [] });
+        collector.stop();
+    });
+}
+
 async function handleMainAction(session, interaction, action, token) {
     const game = session.game;
     const userId = interaction.user.id;
@@ -438,53 +544,7 @@ async function handleMainAction(session, interaction, action, token) {
     }
 
     if (action === 'nullify') {
-        const top = game.pendingTop;
-        if (!top || top.kind !== 'nullify') {
-            await interaction.reply({ content: '当前没有等待无懈可击抢断的锦囊。', ephemeral: true });
-            return;
-        }
-        if (!player || !player.alive) {
-            await interaction.reply({ content: '阵亡角色不能参与抢断。', ephemeral: true });
-            return;
-        }
-        const nullifies = player.hand.map((c, i) => ({ card: c, index: i })).filter(x => x.card.name === '无懈可击');
-        if (!nullifies.length) {
-            await interaction.reply({ content: '你手中没有【无懈可击】。', ephemeral: true });
-            return;
-        }
-
-        const buttons = nullifies.map(x => (
-            new ButtonBuilder()
-                .setCustomId(`sgs_do_nullify_${x.index}`)
-                .setLabel(`⚡ 抢出 ${x.card.short} 抵消`)
-                .setStyle(ButtonStyle.Success)
-        ));
-        const row = new ActionRowBuilder().addComponents(buttons);
-        const reply = await interaction.reply({
-            content: `⚡ 发现锦囊【${top.data.trick_name}】，请抢出【无懈可击】：`,
-            components: [row],
-            ephemeral: true,
-            fetchReply: true,
-        });
-
-        const collector = reply.createMessageComponentCollector({
-            componentType: ComponentType.Button,
-            time: 15000,
-        });
-
-        collector.on('collect', async (btnInter) => {
-            const idx = Number(btnInter.customId.replace('sgs_do_nullify_', ''));
-            await btnInter.deferUpdate();
-            await session.withLock(async () => {
-                const res = game.resolvePending(userId, { type: 'nullify', card_index: idx });
-                session.recordEvents(res.events);
-                store.save(game.guildId, game.serialize());
-                session.armTimer();
-            });
-            await session.render();
-            await interaction.editReply({ content: '✓ 已成功打出【无懈可击】！', components: [] });
-            collector.stop();
-        });
+        await showNullifyFlow(session, interaction);
         return;
     }
 
@@ -494,7 +554,12 @@ async function handleMainAction(session, interaction, action, token) {
             await interaction.reply({ content: '现在没有需要响应的结算。', ephemeral: true });
             return;
         }
-        if (top.kind !== 'nullify' && top.deciderId !== userId) {
+        // 无懈抢断窗与「响应」共用同一入口（抢断窗对全桌开放）。
+        if (top.kind === 'nullify') {
+            await showNullifyFlow(session, interaction);
+            return;
+        }
+        if (top.deciderId !== userId) {
             const who = session.game.player(top.deciderId).name;
             await interaction.reply({ content: `现在轮到 ${who} 响应。`, ephemeral: true });
             return;
@@ -548,7 +613,7 @@ async function handleMainAction(session, interaction, action, token) {
 
     if (action === 'end') {
         await interaction.deferReply({ ephemeral: true });
-        await session.withLock(async () => {
+        const r = await session.runGameAction(() => {
             const res = game.endTurn(userId, token);
             session.recordEvents(res.events);
             if (game.finished) {
@@ -558,8 +623,13 @@ async function handleMainAction(session, interaction, action, token) {
                 store.save(game.guildId, game.serialize());
                 session.armTimer();
             }
+            return res;
         });
         await session.render();
+        if (!r.ok) {
+            await interaction.followup({ content: `❌ ${r.message}`, ephemeral: true });
+            return;
+        }
         await interaction.followup({ content: '✓ 回合已结束。', ephemeral: true });
         return;
     }
@@ -695,7 +765,7 @@ async function showRespondModal(session, interaction) {
 
         if (actionObj) {
             await cInter.deferUpdate();
-            await session.withLock(async () => {
+            const r = await session.runGameAction(() => {
                 const res = game.resolvePending(userId, actionObj);
                 session.recordEvents(res.events);
                 if (game.finished) {
@@ -705,8 +775,14 @@ async function showRespondModal(session, interaction) {
                     store.save(game.guildId, game.serialize());
                     session.armTimer();
                 }
+                return res;
             });
             await session.render();
+            if (!r.ok) {
+                await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                collector.stop();
+                return;
+            }
             await interaction.editReply({ content: '✓ 已完成响应。', components: [] });
             collector.stop();
         }
@@ -798,13 +874,20 @@ async function showPlayFlowModal(session, interaction) {
                 if (tInter.customId === 'sgs_play_zb_target') {
                     const targetId = tInter.values[0];
                     await tInter.deferUpdate();
-                    await session.withLock(async () => {
+                    const r = await session.runGameAction(() => {
                         const res = game.playCard(userId, null, targetId, null, { cardIndexes: cIdxs });
                         session.recordEvents(res.events);
                         store.save(game.guildId, game.serialize());
                         session.armTimer();
+                        return res;
                     });
                     await session.render();
+                    if (!r.ok) {
+                        await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                        targetCollector.stop();
+                        collector.stop();
+                        return;
+                    }
                     await interaction.editReply({ content: '✓ 丈八出【杀】成功！', components: [] });
                     targetCollector.stop();
                     collector.stop();
@@ -819,13 +902,19 @@ async function showPlayFlowModal(session, interaction) {
             if (!hint.needsTarget || !hint.targets.length) {
                 // 直接使用（桃/无中生有/装备/AOE等）
                 await cInter.deferUpdate();
-                await session.withLock(async () => {
+                const r = await session.runGameAction(() => {
                     const res = game.playCard(userId, cardIdx);
                     session.recordEvents(res.events);
                     store.save(game.guildId, game.serialize());
                     session.armTimer();
+                    return res;
                 });
                 await session.render();
+                if (!r.ok) {
+                    await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                    collector.stop();
+                    return;
+                }
                 await interaction.editReply({ content: '✓ 出牌成功！', components: [] });
                 collector.stop();
                 return;
@@ -852,15 +941,22 @@ async function showPlayFlowModal(session, interaction) {
                 if (tInter.customId === 'sgs_play_target_sel') {
                     const tids = tInter.values;
                     await tInter.deferUpdate();
-                    await session.withLock(async () => {
+                    const r = await session.runGameAction(() => {
                         const res = game.playCard(userId, cardIdx, tids.length === 1 ? tids[0] : null, null, {
                             targetIds: tids.length > 1 ? tids : null,
                         });
                         session.recordEvents(res.events);
                         store.save(game.guildId, game.serialize());
                         session.armTimer();
+                        return res;
                     });
                     await session.render();
+                    if (!r.ok) {
+                        await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                        tCol.stop();
+                        collector.stop();
+                        return;
+                    }
                     await interaction.editReply({ content: '✓ 出牌成功！', components: [] });
                     tCol.stop();
                     collector.stop();
@@ -901,13 +997,19 @@ async function showSkillFlowModal(session, interaction, specs) {
         if (!spec.needsCard && !spec.targets) {
             // 苦肉等直接发动
             await sInter.deferUpdate();
-            await session.withLock(async () => {
+            const r = await session.runGameAction(() => {
                 const res = game.activeSkill(userId, skillId);
                 session.recordEvents(res.events);
                 store.save(game.guildId, game.serialize());
                 session.armTimer();
+                return res;
             });
             await session.render();
+            if (!r.ok) {
+                await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                collector.stop();
+                return;
+            }
             await interaction.editReply({ content: `✓ 发动【${skillId}】成功！`, components: [] });
             collector.stop();
             return;
@@ -917,7 +1019,7 @@ async function showSkillFlowModal(session, interaction, specs) {
         if (spec.needsCard) {
             const hOpts = player.hand.slice(0, 25).map((c, i) => ({ label: c.short, value: String(i) }));
             const minVal = spec.cardCount === -1 ? 1 : spec.cardCount;
-            const maxVal = spec.cardCount === -1 ? hOpts.length : spec.cardCount;
+            const maxVal = spec.cardCount === -1 ? Math.max(1, hOpts.length) : spec.cardCount;
 
             const cardSelect = new StringSelectMenuBuilder()
                 .setCustomId('sgs_skill_cards_sel')
@@ -936,13 +1038,20 @@ async function showSkillFlowModal(session, interaction, specs) {
                 const cIdxs = cInter.values.map(Number);
                 if (!spec.targets) {
                     await cInter.deferUpdate();
-                    await session.withLock(async () => {
+                    const r = await session.runGameAction(() => {
                         const res = game.activeSkill(userId, skillId, cIdxs);
                         session.recordEvents(res.events);
                         store.save(game.guildId, game.serialize());
                         session.armTimer();
+                        return res;
                     });
                     await session.render();
+                    if (!r.ok) {
+                        await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                        cardCol.stop();
+                        collector.stop();
+                        return;
+                    }
                     await interaction.editReply({ content: `✓ 发动【${skillId}】成功！`, components: [] });
                     cardCol.stop();
                     collector.stop();
@@ -968,14 +1077,19 @@ async function showSkillFlowModal(session, interaction, specs) {
                 tCol.on('collect', async (tInter) => {
                     const tids = tInter.values;
                     await tInter.deferUpdate();
-                    await session.withLock(async () => {
+                    const r = await session.runGameAction(() => {
                         const res = game.activeSkill(userId, skillId, cIdxs, tids);
                         session.recordEvents(res.events);
                         store.save(game.guildId, game.serialize());
                         session.armTimer();
+                        return res;
                     });
                     await session.render();
-                    await interaction.editReply({ content: `✓ 发动【${skillId}】成功！`, components: [] });
+                    if (!r.ok) {
+                        await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                    } else {
+                        await interaction.editReply({ content: `✓ 发动【${skillId}】成功！`, components: [] });
+                    }
                     tCol.stop();
                     cardCol.stop();
                     collector.stop();
@@ -1004,14 +1118,19 @@ async function showSkillFlowModal(session, interaction, specs) {
             tCol.on('collect', async (tInter) => {
                 const tids = tInter.values;
                 await tInter.deferUpdate();
-                await session.withLock(async () => {
+                const r = await session.runGameAction(() => {
                     const res = game.activeSkill(userId, skillId, [], tids);
                     session.recordEvents(res.events);
                     store.save(game.guildId, game.serialize());
                     session.armTimer();
+                    return res;
                 });
                 await session.render();
-                await interaction.editReply({ content: `✓ 发动【${skillId}】成功！`, components: [] });
+                if (!r.ok) {
+                    await interaction.editReply({ content: `❌ ${r.message}`, components: [] });
+                } else {
+                    await interaction.editReply({ content: `✓ 发动【${skillId}】成功！`, components: [] });
+                }
                 tCol.stop();
                 collector.stop();
             });
@@ -1076,14 +1195,21 @@ async function restoreAllSGSGames(client) {
     let count = 0;
     for (const [guildId, data] of Object.entries(list)) {
         try {
+            if (!data || data.finished) {
+                store.remove(guildId); // 已结束的对局快照直接清理，不占用房位
+                continue;
+            }
             const game = Game.restore(data);
             const session = new GameSession(client, game);
             const channel = await client.channels.fetch(game.channelId).catch(() => null);
             if (channel) {
-                // 尝试查找历史消息
+                // 尝试查找历史消息（仅认标题带「三国杀」的面板，避免误拿其它游戏面板）
                 const messages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
                 if (messages) {
-                    const botMsg = messages.find(m => m.author.id === client.user.id && m.embeds.length > 0);
+                    const botMsg = messages.find(m => m.author.id === client.user.id
+                        && m.embeds.length > 0
+                        && typeof m.embeds[0]?.title === 'string'
+                        && m.embeds[0].title.includes('三国杀'));
                     if (botMsg) session.panel = botMsg;
                 }
             }

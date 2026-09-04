@@ -1239,24 +1239,43 @@ class LiarsDiceGame {
         if (current == null) return [];
 
         try {
+            const canBidMore = [...Array(DICE_SIDES - MIN_FACE + 1).keys()]
+                .map(k => k + MIN_FACE)
+                .some(f => state.isLegalBid(state.currentBid ? state.currentBid.count : 1, f)
+                    || state.isLegalBid((state.currentBid ? state.currentBid.count : 0) + 1, f));
+
             const row0 = new ActionRowBuilder();
-            row0.addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`mystery_liars_dice_bid:${this.id}:${state.turnToken}`)
-                    .setLabel(`🎲 叫点/加注（@${this.plainName(current)}）`)
-                    .setStyle(ButtonStyle.Primary)
-            );
+            const bidBtn = new ButtonBuilder()
+                .setCustomId(`mystery_liars_dice_bid:${this.id}:${state.turnToken}`)
+                .setStyle(ButtonStyle.Primary);
+            if (!canBidMore) {
+                bidBtn.setLabel('🎲 叫点已达上限（请开牌）').setDisabled(true);
+            } else {
+                bidBtn.setLabel(`🎲 叫点/加注（@${this.plainName(current)}）`);
+            }
+            row0.addComponents(bidBtn);
+
             const openBtn = new ButtonBuilder()
                 .setCustomId(`mystery_liars_dice_open:${this.id}:${state.turnToken}`)
                 .setLabel('🤥 开牌！')
                 .setStyle(ButtonStyle.Danger);
             if (!state.canOpen(current)) openBtn.setDisabled(true); // 首叫前不可开牌
             row0.addComponents(openBtn);
+
             const spotBtn = new ButtonBuilder()
                 .setCustomId(`mystery_liars_dice_spot_on:${this.id}:${state.turnToken}`)
-                .setLabel('🎯 精准开牌')
                 .setStyle(ButtonStyle.Success);
-            if (!state.canOpen(current)) spotBtn.setDisabled(true);
+            const canSpot = state.canSpotOn(current);
+            if (!canSpot) {
+                spotBtn.setDisabled(true);
+                if (state.canOpen(current) && state.spotOnCooldown === current) {
+                    spotBtn.setLabel('🎯 精准开牌（冷却中）');
+                } else {
+                    spotBtn.setLabel('🎯 精准开牌');
+                }
+            } else {
+                spotBtn.setLabel('🎯 精准开牌');
+            }
             row0.addComponents(spotBtn);
             const lastRow = new ActionRowBuilder();
             lastRow.addComponents(
@@ -1391,6 +1410,14 @@ class LiarsDiceGame {
                     .setLabel(`${c} 个`)
                     .setValue(String(c))));
             rows.push(new ActionRowBuilder().addComponents(countMenu));
+        } else {
+            rows.push(new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`mystery_liars_dice_bid_max:${this.id}`)
+                    .setLabel('⚠️ 叫点已达全场上限，无法加注，请直接开牌')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true)
+            ));
         }
 
         // 点数菜单：仅当数量已选时可用（按该数量列出合法点数）。
@@ -1499,6 +1526,10 @@ class LiarsDiceGame {
             await sendComponentError(interaction, EXPIRED_MESSAGE);
             return;
         }
+        if (!state.canSpotOn(userId)) {
+            await sendComponentError(interaction, '⏳ 你上一手精准开牌失手，本轮正在冷却中，只能普通叫点或开牌。');
+            return;
+        }
         const bid = state.currentBid;
         // 赔率提示：叫点数恰好等于实际数的先验（均匀骰面下二项分布峰值附近）。
         await sendEphemeral(interaction, {
@@ -1517,6 +1548,12 @@ class LiarsDiceGame {
 
     // 精准开牌二次确认后真正执行。
     async spotOnGo(interaction, expectedToken) {
+        const state = this.state;
+        const userId = interaction.user?.id;
+        if (!state || !state.canSpotOn(userId)) {
+            await sendComponentError(interaction, '⏳ 当前不能精准开牌（可能已过期或处于冷却中）。');
+            return;
+        }
         await this.act(interaction, 'spot_on', expectedToken);
     }
 
@@ -1901,6 +1938,11 @@ async function handleLiarsDiceInteraction(interaction, parts) {
             return game.cancelByInitiator(interaction);
         case 'bid':
             return game.lookDice(interaction); // 主面板按钮 → 私密叫点面板（含看骰）
+        case 'bid_face_wait':
+        case 'bid_max':
+            await deferComponent(interaction, { ephemeral: true });
+            await sendComponentError(interaction, '此按钮仅为状态提示，请按提示操作。');
+            return false;
         case 'bid_count':
             return game.bidCountSelect(interaction, Number(turnToken));
         case 'bid_face':

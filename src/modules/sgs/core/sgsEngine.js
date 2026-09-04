@@ -919,14 +919,19 @@ class Game {
             const tid = targetId || (targetIds ? targetIds[0] : null);
             const target = this._validOther(player, tid);
 
+            const unlimitedZb = player.general === '张飞' || (weapon && weapon.name === '诸葛连弩');
+            if (player.slashUsed && !unlimitedZb) {
+                throw new GameError('每回合只能使用一张【杀】；装备【诸葛连弩】可取消限制。');
+            }
+            // 校验全部通过后才动牌：范围不符时不能吞掉玩家的两张手牌。
+            if (this.distance(player, target) > this.attackRange(player)) {
+                throw new GameError(`目标距离为 ${this.distance(player, target)}，超出目前攻击范围 ${this.attackRange(player)}。`);
+            }
+
             this.removeHandCard(player, c1);
             this.removeHandCard(player, c2);
             this.discard.push(c1, c2);
 
-            const unlimited = player.general === '张飞' || (weapon && weapon.name === '诸葛连弩');
-            if (player.slashUsed && !unlimited) {
-                throw new GameError('每回合只能使用一张【杀】；装备【诸葛连弩】可取消限制。');
-            }
             player.slashUsed = true;
             const fakeSlash = new Card({ cardId: this._nextCardId(), name: '杀', suit: Suit.SPADE, rank: 1, cardType: CardType.BASIC });
             this._launchSingleAttack(player, fakeSlash, target, events, '（【丈八蛇矛】双牌转化）');
@@ -946,6 +951,19 @@ class Game {
                 }
                 if (tids.length > 3) throw new GameError('【方天画戟】最多指定 3 名目标。');
                 const targets = tids.map(tid => this._validOther(player, tid));
+                if (new Set(targets.map(t => t.userId)).size !== targets.length) {
+                    throw new GameError('多名目标不能重复。');
+                }
+                const unlimitedFt = player.general === '张飞' || (weapon && weapon.name === '诸葛连弩');
+                if (player.slashUsed && !unlimitedFt) {
+                    throw new GameError('每回合只能使用一张【杀】；装备【诸葛连弩】可取消限制。');
+                }
+                // 先校验全部目标的攻击范围再动牌，避免中途失败留下半改状态。
+                for (const t of targets) {
+                    if (this.distance(player, t) > this.attackRange(player)) {
+                        throw new GameError(`目标距离为 ${this.distance(player, t)}，超出目前攻击范围 ${this.attackRange(player)}。`);
+                    }
+                }
                 this.removeHandCard(player, card);
                 this.discard.push(card);
                 player.slashUsed = true;

@@ -9,6 +9,7 @@
  * 6. 濒死求桃智能快跳
  * 7. 序列化与断点续传（serialize / restore）
  * 8. 500 局长局模拟稳定性
+ * 9. 校验先于扣牌（丈八蛇矛/方天画戟失败出牌不吞手牌、不留半改状态）
  */
 
 const assert = require('node:assert');
@@ -295,7 +296,49 @@ async function runAllTests() {
         console.log(`  ✓ [8/8] 500 局长局模拟器回归全部顺利完赛（100.0%，0 死锁 0 崩溃）！`);
     }
 
-    console.log('\n🎉 所有 8 项单元与全链路集成测试全部通过 (All Green)！');
+    // 9. 校验先于扣牌：丈八蛇矛 & 方天画戟的失败出牌不得吞手牌
+    {
+        // 9.1 丈八蛇矛：已出过杀时双牌转化应被拒，且两张手牌必须还在手上
+        const game = makeScriptedGame(['张飞', '刘备', '曹操']);
+        const attacker = game.current;
+        const target = game.players[1];
+        attacker.equipment[EquipmentSlot.WEAPON] = makeCard(9501, '丈八蛇矛', Suit.SPADE, CardType.EQUIPMENT, EquipmentSlot.WEAPON, 3);
+        attacker.hand.push(makeCard(9502, '闪', Suit.HEART));
+        attacker.hand.push(makeCard(9503, '桃', Suit.DIAMOND));
+        attacker.slashUsed = true; // 本回合已用过杀（张飞不受限——换成非张飞验证）
+        attacker.general = '刘备';
+
+        const handBefore = attacker.hand.length;
+        assert.throws(() => game.playCard(attacker.userId, null, target.userId, null, { cardIndexes: [handBefore - 2, handBefore - 1] }),
+            /每回合只能使用一张【杀】/);
+        assert.strictEqual(attacker.hand.length, handBefore, '校验失败后两张手牌不能被吞掉');
+        assert.strictEqual(game.discard.filter(c => c.cardId === 9502 || c.cardId === 9503).length, 0, '失败出牌不得把转化牌塞进弃牌堆');
+
+        // 9.2 方天画戟：多目标杀同样受每回合一杀限制
+        attacker.general = '曹操';
+        attacker.hand = [makeCard(9504, '杀', Suit.SPADE)];
+        attacker.equipment[EquipmentSlot.WEAPON] = makeCard(9505, '方天画戟', Suit.DIAMOND, CardType.EQUIPMENT, EquipmentSlot.WEAPON, 4);
+        assert.throws(() => game.playCard(attacker.userId, 0, null, null, { targetIds: [target.userId, game.players[2].userId] }),
+            /每回合只能使用一张【杀】/);
+        assert.strictEqual(attacker.hand.length, 1, '方天画戟校验失败后杀不能被弃置');
+
+        // 9.3 方天画戟：重复目标整手拒绝，不留半改状态
+        //（3 人环形座位距离恒为 1，无法构造超范围场景，重复目标同样走"先校验后扣牌"路径）
+        attacker.slashUsed = false;
+        attacker.slashUsed = false;
+        assert.throws(() => game.playCard(attacker.userId, 0, null, null, { targetIds: [target.userId, target.userId] }),
+            /多名目标不能重复/);
+        assert.strictEqual(attacker.hand.length, 1, '重复目标校验失败后杀不能被弃置');
+
+        // 9.4 方天画戟：合法多目标成功路径
+        const resFt = game.playCard(attacker.userId, 0, null, null, { targetIds: [target.userId, game.players[2].userId] });
+        assert.strictEqual(attacker.hand.length, 0);
+        assert.strictEqual(resFt.pendingKind, 'attack');
+        assert.strictEqual(game.pendingStack.filter(p => p.kind === 'attack').length, 2, '方天画戟应对两名目标各生成一个攻击结算');
+        console.log('  ✓ [9/9] 丈八蛇矛/方天画戟校验先于扣牌（失败不吞牌）验证通过');
+    }
+
+    console.log('\n🎉 所有 9 项单元与全链路集成测试全部通过 (All Green)！');
 }
 
 function createSimpleRng(seed) {

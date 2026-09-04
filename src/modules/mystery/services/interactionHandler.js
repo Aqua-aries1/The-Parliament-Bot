@@ -91,6 +91,8 @@ const ROUTES = Object.freeze({
         start: { component: 'button', partCount: 2 },
         cancel: { component: 'button', partCount: 2 },
         bid: { component: 'button', partCount: 3, tokenIndex: 2 },
+        bid_face_wait: { component: 'button', partCount: 2 },
+        bid_max: { component: 'button', partCount: 2 },
         bid_count: { component: 'string', partCount: 3, tokenIndex: 2 },
         bid_face: { component: 'string', partCount: 3, tokenIndex: 2 },
         bid_confirm: { component: 'button', partCount: 3, tokenIndex: 2 },

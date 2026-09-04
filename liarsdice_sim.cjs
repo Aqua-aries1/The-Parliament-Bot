@@ -35,8 +35,8 @@ function runGame(stats) {
             stats.openCorrect += (expect < bid.count - 0.8) ? 1 : 0; // 近似
             continue;
         }
-        // 精准开牌窗口：期望紧贴叫点时小概率尝试（真人会嗅到"正好"）。
-        if (Math.abs(expect - bid.count) <= 0.4 && Math.random() < 0.25) {
+        // 精准开牌窗口：期望紧贴叫点时小概率尝试（真人会嗅到"正好"），且需未在冷却期。
+        if (s.canSpotOn(cur) && Math.abs(expect - bid.count) <= 0.4 && Math.random() < 0.25) {
             const r = s.apply('spot_on', cur, {});
             stats.spotons += 1;
             if (r.spotOn) stats.spotonHits += 1;
@@ -46,7 +46,7 @@ function runGame(stats) {
         let nc = Math.max(bid.count + 1, Math.round(expect));
         let nf = nc === bid.count ? bid.face + 1 : bid.face;
         if (nf > 6) { nf = 2; nc += 1; }
-        if (nc > s.totalDice()) { s.apply('open', cur, {}); stats.opens += 1; continue; }
+        if (nc > s.totalDice() || !s.isLegalBid(nc, nf)) { s.apply('open', cur, {}); stats.opens += 1; continue; }
         s.apply('bid', cur, { bid: { count: nc, face: nf } });
         stats.bids += 1;
     }

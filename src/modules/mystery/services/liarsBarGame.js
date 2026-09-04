@@ -796,15 +796,26 @@ class LiarsBarGame {
                 }
                 return;
             }
-            if (!hand.length) return; // 理论不可达（空手必然 mustChallenge），保险兜底。
+            if (!hand.length) {
+                if (state.canChallenge(actorId)) {
+                    try {
+                        result = state.apply('challenge', actorId, { expectedToken: armedToken });
+                    } catch (error) {
+                        if (!(error instanceof InvalidAction)) throw error;
+                    }
+                }
+                return;
+            }
             // 每轮一手：已盖过牌的人超时 → 不能再盖，替 TA 质疑收尾（不针对特定人，
             // 引擎按 lastPlay 开牌）；还能盖 → 自动出牌（有真牌出真牌，否则随机吹牛）。
             const canPlay = state.canPlayCards(actorId, [0]);
             if (!canPlay) {
-                try {
-                    result = state.apply('challenge', actorId, { expectedToken: armedToken });
-                } catch (error) {
-                    if (!(error instanceof InvalidAction)) throw error;
+                if (state.canChallenge(actorId)) {
+                    try {
+                        result = state.apply('challenge', actorId, { expectedToken: armedToken });
+                    } catch (error) {
+                        if (!(error instanceof InvalidAction)) throw error;
+                    }
                 }
                 return;
             }
@@ -816,11 +827,16 @@ class LiarsBarGame {
             try {
                 result = state.apply('play_cards', actorId, { expectedToken: armedToken, cardIndexes: indexes });
             } catch (error) {
-                if (!(error instanceof InvalidAction)) throw error;
+                if (state.canChallenge(actorId)) {
+                    try {
+                        result = state.apply('challenge', actorId, { expectedToken: armedToken });
+                    } catch (_) {}
+                }
+                if (!result && !(error instanceof InvalidAction)) throw error;
             }
         });
         if (result) {
-            const forced = '（⏰ 超时自动出牌）';
+            const forced = result.action === 'challenge' ? '（⏰ 超时自动质疑）' : '（⏰ 超时自动出牌）';
             this.lastEvent = `${this.safeFormatResult(result)}\n${forced}`;
             await this.afterActionLocked(result);
         } else {
