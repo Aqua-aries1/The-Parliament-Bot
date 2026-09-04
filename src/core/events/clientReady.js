@@ -6,6 +6,8 @@ const {
 } = require('discord.js');
 const { restorePressureGames } = require('../../modules/mystery/services/pressureRouletteGame');
 const { restoreActiveGames: restoreDevilRouletteGames } = require('../../modules/mystery/services/devilRouletteGame');
+const { restoreActiveGames: restoreLiarsBarGames } = require('../../modules/mystery/services/liarsBarGame');
+const { restoreActiveGames: restoreLiarsDiceGames } = require('../../modules/mystery/services/liarsDiceGame');
 const { restoreAllSGSGames } = require('../../modules/sgs/services/sgsGame');
 
 function normalizeDiscordToken(raw) {
@@ -137,6 +139,20 @@ async function clientReadyHandler(client){
         await restoreDevilRouletteGames(client);
     } catch (error) {
         console.error('❌ [DevilRoulette] 对局恢复流程异常（已跳过，不影响启动）：', error);
+    }
+
+    // 骗子酒馆断连接续：同恶魔轮盘，快照落盘、启动时重发面板续接。
+    try {
+        await restoreLiarsBarGames(client);
+    } catch (error) {
+        console.error('❌ [LiarsBar] 对局恢复流程异常（已跳过，不影响启动）：', error);
+    }
+
+    // 骗子骰子断连接续。
+    try {
+        await restoreLiarsDiceGames(client);
+    } catch (error) {
+        console.error('❌ [LiarsDice] 对局恢复流程异常（已跳过，不影响启动）：', error);
     }
 
     // 三国杀对局恢复：断点续传

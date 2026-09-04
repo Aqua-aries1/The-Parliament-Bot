@@ -8,6 +8,8 @@ const MYSTERY_GAMES = Object.freeze({
     DUEL: '死斗',
     DEVIL_ROULETTE: '恶魔轮盘',
     PRESSURE: '加压轮盘',
+    LIARS_BAR: '骗子酒馆',
+    LIARS_DICE: '骗子骰子',
 });
 
 const MYSTERY_GAME_NAMES = Object.freeze(Object.values(MYSTERY_GAMES));
@@ -18,6 +20,8 @@ const MULTIPLAYER_GAME_NAMES = Object.freeze([
     MYSTERY_GAMES.DUEL,
     MYSTERY_GAMES.DEVIL_ROULETTE,
     MYSTERY_GAMES.PRESSURE,
+    MYSTERY_GAMES.LIARS_BAR,
+    MYSTERY_GAMES.LIARS_DICE,
 ]);
 
 const MYSTERY_GAME_NAME_SET = new Set(MYSTERY_GAME_NAMES);
