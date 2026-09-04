@@ -73,6 +73,9 @@ const {
     NAME_POOL_CUSTOM_ID_PREFIX,
 } = require('../../modules/mystery/services/namePoolManager');
 
+// 三国杀模块交互处理
+const { handleSGSInteraction } = require('../../modules/sgs/services/sgsGame');
+
 const { checkFormPermission, getFormPermissionDeniedMessage } = require('../../core/utils/permissionManager');
 const { getFormPermissionSettings } = require('../../core/utils/database');
 
@@ -161,6 +164,11 @@ async function interactionCreateHandler(interaction) {
         
         // 处理按钮点击
         if (interaction.isButton()) {
+            if (interaction.customId.startsWith('sgs:')) {
+                await handleSGSInteraction(interaction);
+                return;
+            }
+
             // === 机器人消息管理（优先短路，避免与其它模块前缀冲突） ===
             if (interaction.customId.startsWith(BOT_MESSAGE_CUSTOM_ID_PREFIX)) {
                 await handleBotMessageInteraction(interaction);

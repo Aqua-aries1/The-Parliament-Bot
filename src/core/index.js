@@ -177,6 +177,9 @@ const { mysteryGuildMemberUpdateHandler } = require('../modules/mystery/events/g
 const mysteryNicknameLock = require('../modules/mystery/services/mysteryNicknameLock');
 const mysteryGameManager = require('../modules/mystery/services/mysteryGameManager');
 
+// 三国杀系统（独立顶级指令 /三国杀）
+const sgsCommand = require('../modules/sgs/commands/sgsCommand');
+
 const DISCORD_REST_TIMEOUT_MS = (() => {
     const n = Number(process.env.DISCORD_REST_TIMEOUT_MS);
     return Number.isFinite(n) && n > 0 ? n : 15000;
@@ -349,6 +352,9 @@ client.commands.set(manageCommand.data.name, manageCommand);
 client.commands.set(mysteryCommand.data.name, mysteryCommand);
 client.commands.set(mysteryGameStatsCommand.data.name, mysteryGameStatsCommand);
 client.commands.set(mysterySettingsCommand.data.name, mysterySettingsCommand);
+
+// 注册独立三国杀指令
+client.commands.set(sgsCommand.data.name, sgsCommand);
 
 // 加压轮盘测试指令：仅在 .env 里设置 MYSTERY_TEST_COMMANDS=true 时才注册，
 // 避免测试用的虚拟机器人局出现在正式服务器的指令列表里。

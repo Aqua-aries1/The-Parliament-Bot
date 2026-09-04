@@ -6,6 +6,7 @@ const {
 } = require('discord.js');
 const { restorePressureGames } = require('../../modules/mystery/services/pressureRouletteGame');
 const { restoreActiveGames: restoreDevilRouletteGames } = require('../../modules/mystery/services/devilRouletteGame');
+const { restoreAllSGSGames } = require('../../modules/sgs/services/sgsGame');
 
 function normalizeDiscordToken(raw) {
     if (!raw) return '';
@@ -136,6 +137,13 @@ async function clientReadyHandler(client){
         await restoreDevilRouletteGames(client);
     } catch (error) {
         console.error('❌ [DevilRoulette] 对局恢复流程异常（已跳过，不影响启动）：', error);
+    }
+
+    // 三国杀对局恢复：断点续传
+    try {
+        await restoreAllSGSGames(client);
+    } catch (error) {
+        console.error('❌ [SGS] 对局恢复流程异常（已跳过，不影响启动）：', error);
     }
 }
 
