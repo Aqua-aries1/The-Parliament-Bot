@@ -204,9 +204,10 @@ class LiarsDiceGame {
     plainName(userId) {
         const member = this.guild?.members?.cache?.get(userId);
         const name = member?.displayName;
-        if (name) return name;
+        // 名字会进 embed 标题/按钮/复盘行：剥掉 markdown 控制字符防伪造标题层级。
+        if (name) return String(name).replace(/[*_~`#|>]/g, '');
         this.guild?.members?.fetch?.(userId)?.catch?.(() => {});
-        return `玩家${userId}`;
+        return String(`玩家${userId}`).replace(/[*_~`#|>]/g, '');
     }
 
     modeText() {
@@ -1910,7 +1911,7 @@ function parseParts(parts) {
 
 function sanitizeRenameNickname(raw) {
     return String(raw ?? '')
-        .replace(/[@#:\\\x00-\x1F\x7F]/g, '')
+        .replace(/[@#:`*_~|>\\\x00-\x1F\x7F]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 32);

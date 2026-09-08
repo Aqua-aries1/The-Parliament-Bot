@@ -250,7 +250,9 @@ async function handleRecruitAction(session, interaction, action) {
 
     if (action === 'join') {
         const r = await session.runGameAction(() => {
-            const msg = game.join(userId, userName);
+            // 剥离 markdown 控制字符：名字会进公开面板的 code span 与标题，反引号/井号可伪造系统文案。
+        userName = String(userName || '').replace(/[`#*_|~><]/g, '');
+        const msg = game.join(userId, userName);
             store.save(game.guildId, game.serialize());
             return msg;
         });
@@ -341,7 +343,7 @@ async function showChooseGeneralModal(session, interaction) {
             .setPlaceholder('🏯 选择 蜀/魏 武将')
             .addOptions(shuWei.slice(0, 25).map(g => ({
                 label: `【${g.name}】${g.faction}｜${g.skillName}`,
-                description: g.description.slice(0, 50),
+                description: Array.from(g.description).slice(0, 50).join(''),
                 value: g.name,
             })));
         rows.push(new ActionRowBuilder().addComponents(selSW));
@@ -353,7 +355,7 @@ async function showChooseGeneralModal(session, interaction) {
             .setPlaceholder('🌊 选择 吴/群 武将')
             .addOptions(wuQun.slice(0, 25).map(g => ({
                 label: `【${g.name}】${g.faction}｜${g.skillName}`,
-                description: g.description.slice(0, 50),
+                description: Array.from(g.description).slice(0, 50).join(''),
                 value: g.name,
             })));
         rows.push(new ActionRowBuilder().addComponents(selWQ));
@@ -483,7 +485,7 @@ async function showNullifyFlow(session, interaction, token) {
         return;
     }
 
-    const buttons = nullifies.map(x => (
+    const buttons = nullifies.slice(0, 5).map(x => (
         new ButtonBuilder()
             .setCustomId(`sgs_do_nullify_${x.index}`)
             .setLabel(`⚡ 抢出 ${x.card.short} 抵消`)
@@ -728,7 +730,8 @@ async function showRespondModal(session, interaction, token) {
         rows.push(new ActionRowBuilder().addComponents(select));
     } else {
         const buttons = [];
-        for (const [c, note] of info.cards.slice(0, 4)) {
+        // 上限 3 张：3 闪 + 八卦阵 + 放弃 = 5 组件（Discord 每 row 上限 5）。
+        for (const [c, note] of info.cards.slice(0, 3)) {
             const idx = game.player(userId).hand.indexOf(c);
             buttons.push(
                 new ButtonBuilder()
