@@ -392,6 +392,7 @@ async function showRulesHelp(interaction) {
             { label: '卡牌与锦囊机制', description: '基本牌/锦囊/延时锦囊/无懈可击', value: 'cards' },
             { label: '武器与防具特效', description: '丈八/方天/青龙刀/麒麟弓/白银狮子等', value: 'equips' },
             { label: '濒死求桃与托管', description: '快跳救人、单次超时自动托管说明', value: 'flow' },
+            { label: '武将技能速查', description: '全部武将与技能效果一览', value: 'generals' },
         ]);
 
     const row = new ActionRowBuilder().addComponents(select);
@@ -439,6 +440,9 @@ async function showRulesHelp(interaction) {
                 '• **仁王盾**：锁定技，黑色的【杀】对你完全无效。\n' +
                 '• **白银狮子**：受到的单次伤害最多锁定为 1 点；失去装备时回复 1 点体力。'
             );
+        } else if (val === 'generals') {
+            text = '**🎭 武将技能速查**\n'
+                + GENERAL_LIST.map(g => `• **${g.name}**（${g.faction}，${g.maxHp} 血）——【${g.skillName}】：${g.description}`).join('\n');
         } else {
             text = (
                 '**⚡ 智能快跳与托管说明**\n' +

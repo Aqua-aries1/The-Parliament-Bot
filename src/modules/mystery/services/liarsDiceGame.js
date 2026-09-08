@@ -565,6 +565,19 @@ class LiarsDiceGame {
             await this.beginEliminationPenaltyLocked(next.loserId, 'normal', next.deciderId);
             return;
         }
+        // 惩罚结算期间离席的玩家：队列清空后补判失格（每个出局者都当场受罚一次）。
+        if (this.pendingInvalidations?.size && state.phase !== 'ended') {
+            const pid = [...this.pendingInvalidations].find(id => state.players.includes(id) && state.alive.has(id));
+            if (pid) {
+                this.pendingInvalidations.delete(pid);
+                state.applyForfeit(pid);
+                this.lastEvent = `🏳️ **${this.shortName(pid)}** 从牌桌消失了，判负离席。`;
+                this.panelColor = 0x11806A;
+                await this.sendBroadcastLocked({ title: '🏳️ 玩家失格' });
+                await this.beginEliminationPenaltyLocked(pid, 'surrender');
+                return;
+            }
+        }
         if (state.phase === 'ended') {
             this.status = 'ended';
             this.finalWinnerId = state.winnerId;
@@ -2004,6 +2017,15 @@ async function handleLiarsDiceMemberInvalidated(game, userId) {
             outcome = 'recruit_left';
             return;
         }
+        if (game.status === 'penalty' && game.state
+            && game.state.players.includes(userId) && game.state.alive.has(userId)) {
+            // 惩罚结算窗口内的失格先记录：结算恢复后由 resumeAfterPenaltyLocked 补判。
+            // （gameManager 对同一用户只派发一次，这里不接住就永久漏判。）
+            game.pendingInvalidations ||= new Set();
+            game.pendingInvalidations.add(userId);
+            outcome = 'deferred';
+            return;
+        }
         if (game.status === 'playing' && game.state
             && game.state.players.includes(userId) && game.state.alive.has(userId)) {
             game.state.applyForfeit(userId);
@@ -2013,6 +2035,7 @@ async function handleLiarsDiceMemberInvalidated(game, userId) {
         }
     });
     if (!outcome) return false;
+    if (outcome === 'deferred') return true; // 惩罚结束后由 resumeAfterPenaltyLocked 补判
     // 招募期失格/散桌没有对局状态可惩罚：刷新面板收场即可。
     // （state 为 null 时走惩罚流会在 state.players 处 TypeError。）
     if (outcome !== 'forfeit_penalty') {

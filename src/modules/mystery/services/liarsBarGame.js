@@ -671,6 +671,19 @@ class LiarsBarGame {
             return;
         }
         this.status = 'playing';
+        // 惩罚结算期间离席的玩家：恢复对局前补判失格（每个出局者都当场受罚一次）。
+        if (this.pendingInvalidations?.size && state.phase !== 'ended') {
+            const pid = [...this.pendingInvalidations].find(id => state.players.includes(id) && state.alive.has(id));
+            if (pid) {
+                this.pendingInvalidations.delete(pid);
+                state.applyForfeit(pid);
+                this.lastEvent = `🏳️ **${this.shortName(pid)}** 从酒馆消失了，判负离席。`;
+                this.panelColor = 0x9B59B6;
+                await this.sendBroadcastLocked({ title: '🏳️ 玩家失格' });
+                await this.beginEliminationPenaltyLocked(pid, 'surrender');
+                return;
+            }
+        }
         if (this.pendingAnnouncement) {
             this.lastEvent = this.pendingAnnouncement;
             this.pendingAnnouncement = '';
@@ -1998,6 +2011,15 @@ async function handleLiarsBarMemberInvalidated(game, userId) {
             outcome = 'recruit_left';
             return;
         }
+        if (game.status === 'penalty' && game.state
+            && game.state.players.includes(userId) && game.state.alive.has(userId)) {
+            // 惩罚结算窗口内的失格先记录：结算恢复后由 resumeAfterPenaltyLocked 补判。
+            // （gameManager 对同一用户只派发一次，这里不接住就永久漏判。）
+            game.pendingInvalidations ||= new Set();
+            game.pendingInvalidations.add(userId);
+            outcome = 'deferred';
+            return;
+        }
         if (game.status === 'playing' && game.state
             && game.state.players.includes(userId) && game.state.alive.has(userId)) {
             const result = game.state.applyForfeit(userId);
@@ -2008,6 +2030,7 @@ async function handleLiarsBarMemberInvalidated(game, userId) {
         }
     });
     if (!outcome) return false;
+    if (outcome === 'deferred') return true; // 惩罚结束后由 resumeAfterPenaltyLocked 补判
     // 招募期失格/散桌没有对局状态可惩罚：刷新面板收场即可。
     // （原路径无条件走惩罚流，state 为 null 时 TypeError 会被兜底成整桌强制清场。）
     if (outcome !== 'forfeit_penalty') {
