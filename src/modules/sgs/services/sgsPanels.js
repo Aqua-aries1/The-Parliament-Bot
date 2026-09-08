@@ -132,19 +132,19 @@ function pendingLine(game) {
     };
 
     if (top.kind === 'nullify') {
-        return `⚡ 【${top.data.trick_name}】生效前！全场进入【无懈可击】抢断窗口（手上有无懈者可抢出！）`;
+        return `⚡ 【${top.data.trick_name}】生效前！**12 秒抢断窗口**：手上有【无懈可击】可点「⚡ 抢出无懈」抵消，无人抢出则照常生效。`;
     }
     if (top.kind === 'attack') {
-        return `⏳ 等待 **${nameOf(top.deciderId)}** 响应 ${top.data.card_short || '【杀】'}（还需闪避 ${top.data.dodges_left} 次）`;
+        return `⏳ 等待 **${nameOf(top.deciderId)}** 响应 ${top.data.card_short || '【杀】'}（还需闪避 ${top.data.dodges_left} 次；限时内不响应将自动托管）`;
     }
     if (top.kind === 'aoe') {
-        return `⏳ 【${top.data.trick_name}】等待 **${nameOf(top.deciderId)}** 出【${top.data.needed}】`;
+        return `⏳ 【${top.data.trick_name}】等待 **${nameOf(top.deciderId)}** 出【${top.data.needed}】（限时内不响应将自动托管）`;
     }
     if (top.kind === 'duel') {
-        return `⏳ 【决斗】等待 **${nameOf(top.deciderId)}** 出【杀】`;
+        return `⏳ 【决斗】等待 **${nameOf(top.deciderId)}** 出【杀】（限时内不响应将自动托管）`;
     }
     if (top.kind === 'dying') {
-        return `⚠️ **${nameOf(top.data.dying_id)}** 濒死！等待 **${nameOf(top.deciderId)}** 出桃救援`;
+        return `⚠️ **${nameOf(top.data.dying_id)}** 濒死！等待 **${nameOf(top.deciderId)}** 出桃救援（限时内不响应将自动跳过）`;
     }
     if (top.kind === 'zone') {
         const target = nameOf(top.data.target_id);
@@ -179,7 +179,7 @@ function renderMain(game, logLines = null) {
             .setColor(0x67B57C);
     } else {
         const state = pendingLine(game);
-        const head = `轮到 **${view.turnName}** 的回合${state ? `\n${state}` : ''}`;
+        const head = `轮到 **${view.turnName}** 的回合${state ? `\n${state}` : ''}\n⏳ 长时间不操作将自动托管并结束回合`;
         embed = new EmbedBuilder()
             .setTitle('⚔️ 三国杀')
             .setDescription(head)
@@ -226,7 +226,9 @@ function renderPrivate(game, userId) {
         const roleText = view.role || '未分配';
         const statusSuffix = view.autoPlay ? '【托管中】' : '';
 
-        const desc = `身份：**${roleText}**｜武将：**${view.general}** ${statusSuffix}｜技能：${skill ? skill.skillName : '？'}\n` +
+        const skillText = skill ? `【${skill.skillName}】${skill.description || ''}` : '？';
+        const desc = `身份：**${roleText}**｜武将：**${view.general}** ${statusSuffix}\n` +
+                     `技能：${skillText}\n` +
                      `体力：${hpBar(view.hp, view.maxHp)} ${view.hp}/${view.maxHp}｜攻击范围：${view.attackRange}`;
 
         return new EmbedBuilder()
@@ -263,6 +265,7 @@ function buildMainComponents(game) {
     const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`sgs:m:${guildId}:${token}:skill`).setLabel('✦ 技能').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(`sgs:m:${guildId}:${token}:end`).setLabel('⏭ 结束回合').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`sgs:m:${guildId}:${token}:rules`).setLabel('📜 规则手册').setStyle(ButtonStyle.Secondary),
     );
 
     if (game.players.some(p => p.alive && p.autoPlay)) {

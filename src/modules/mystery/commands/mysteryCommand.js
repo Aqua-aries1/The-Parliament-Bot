@@ -89,7 +89,7 @@ const data = new SlashCommandBuilder()
         .setDescription('参加一场骗子酒馆：盖牌、撒谎、开牌（2-4 人卡牌吹牛）'))
     .addSubcommand(subcommand => subcommand
         .setName(SUBCOMMAND_LIARS_DICE)
-        .setDescription('参加一场骗子骰子：叫点、加注、开牌数骰（2-4 人骰子吹牛）'));
+        .setDescription('参加一场骗子骰子：叫点、加注、开牌数骰（4-8 人骰子吹牛）'));
 
 function botHasPermission(interaction, permission) {
     return interaction.guild.members.me?.permissions?.has(permission) === true;

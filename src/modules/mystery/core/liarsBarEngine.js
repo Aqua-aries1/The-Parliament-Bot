@@ -10,7 +10,7 @@
  *   - 每轮输家（被抓的骗子 / 质疑失败者）翻自己专属左轮牌堆顶牌
  *     （1 致命 + 3 空包共 4 张，统一翻 1 张、翻掉不回填）：空包存活，致命出局；
  *   - 空手玩家跳过；只剩一人有手牌时该玩家必须质疑；
- *   - 新一轮先手 = 上一轮的输家（若已出局则顺位下一位存活者）；
+ *   - 新一轮先手 = 上一轮输家的下家（座位顺位存活者）；
  *   - 仅剩 1 人存活即获胜。
  *
  * 所有回合不变量都在这里维护；Discord 交互层只允许调用 apply() 并渲染返回的状态，
@@ -102,6 +102,7 @@ class LiarsBarState {
         this.winnerId = null;
         this.hands = {};
         this.revolverDecks = {}; // playerId -> 布尔数组（true=致命），游标即数组长度递减
+        this.failedChallenges = {}; // playerId -> 质疑失手次数（两振制：首次失手免翻左轮）
         this.alive = new Set(unique);
         this.tableDeck = [];     // 桌面牌堆（剩余可翻的点数）
         this.tableRank = null;   // 本轮桌面点数
@@ -298,7 +299,7 @@ class LiarsBarState {
     }
 
     _challenge(actorId) {
-        assert(this.canChallenge(actorId), '现在不能质疑。');
+        assert(this.canChallenge(actorId), '现在不能质疑——不能质疑自己刚盖的那一手，第一手也无人可质疑。');
         const accused = this.lastPlay.playerId;
         const cards = this.lastPlay.cards;
         // 吹牛判定：非（桌面点数或小丑）的牌 = 假牌；一手里第 2 张及以后的小丑
@@ -320,34 +321,60 @@ class LiarsBarState {
         result.challengeTableRank = this.tableRank; // 新一轮会重置，先留档给交互层播报
         result.loserId = loserId;
 
-        // 左轮翻牌：顶牌 = deck[pointer]，翻后指针后移（翻尽必死——第 4 发必致命）。
-        // 统一翻 1 张（首翻致命率 1/4，翻掉不回填、越罚越危险）。
-        const revolver = this.revolverDecks[loserId];
-        const ptr = this.revolverPointers[loserId] || 0;
-        const lethal = ptr < revolver.length ? revolver[ptr] : true;
-        this.revolverPointers[loserId] = ptr + 1;
-        result.lethal = lethal;
-        result.revolverFlips = [lethal];
+        // 质疑失败两振制：首次失手免翻左轮只记警告，再次失手才翻。
+        // 数据依据（R4 博弈审查）：对称翻左轮下自愿质疑 EV 恒负（临界诚实率 ≤0.8，
+        // 而实测诚实率 90%+），质疑只剩强制渠道、卡牌策略不影响胜负——免翻首失
+        // 让质疑在吹牛率>0 时即 +EV，撒谎重新变得有风险。
+        const fails = this.failedChallenges[actorId] || 0;
+        const pardon = !liar && fails === 0;
+        if (!liar) this.failedChallenges[actorId] = fails + 1;
+        result.pardonedChallenge = pardon;
 
-        if (lethal) {
-            result.eliminatedId = loserId;
-            this.alive.delete(loserId);
-            this.hands[loserId] = [];
-            if (this.alive.size <= 1) {
-                this.phase = 'ended';
-                this.winnerId = [...this.alive][0] || null;
-                result.gameEnded = true;
-                result.winnerId = this.winnerId;
-                return result;
+        if (pardon) {
+            result.revolverFlips = [];
+        } else {
+            // 左轮翻牌：顶牌 = deck[pointer]，翻后指针后移（翻尽必死——第 4 发必致命）。
+            // 统一翻 1 张（首翻致命率 1/4，翻掉不回填、越罚越危险）。
+            const revolver = this.revolverDecks[loserId];
+            const ptr = this.revolverPointers[loserId] || 0;
+            const lethal = ptr < revolver.length ? revolver[ptr] : true;
+            this.revolverPointers[loserId] = ptr + 1;
+            result.lethal = lethal;
+            result.revolverFlips = [lethal];
+
+            if (lethal) {
+                result.eliminatedId = loserId;
+                this.alive.delete(loserId);
+                this.hands[loserId] = [];
+                if (this.alive.size <= 1) {
+                    this.phase = 'ended';
+                    this.winnerId = [...this.alive][0] || null;
+                    result.gameEnded = true;
+                    result.winnerId = this.winnerId;
+                    return result;
+                }
             }
         }
 
-        // 开新一轮：先手 = 本轮输家（若已出局则由 _startRound 顺位）。
-        this._startRound(loserId);
+        // 开新一轮：先手 = 输家的下家（座位顺位）。原"输家当先手"实测会叠加成
+        // 处刑跑步机——强制质疑者恒为当轮先手，最后手大概率诚实 → 先手每轮
+        // 高概率翻左轮，输家被双重惩罚（R4 数据：初始先手胜率跌至基线一半）。
+        this._startRound(this._nextAliveAfter(loserId) ?? loserId);
         result.newRound = true;
         result.newTableRank = this.tableRank;
         result.firstPlayerId = this.turnPlayerId;
         return result;
+    }
+
+    // 座位顺位上 playerId 的下一位存活者（不含本人）；找不到返回 null。
+    _nextAliveAfter(playerId) {
+        const seat = this.players.indexOf(playerId);
+        if (seat === -1) return null;
+        for (let step = 1; step <= this.players.length; step++) {
+            const pid = this.players[(seat + step) % this.players.length];
+            if (this.alive.has(pid)) return pid;
+        }
+        return null;
     }
 
     // 认输 / 成员失格：直接出局（左轮免翻），剩 1 人即终局。
@@ -389,6 +416,7 @@ class LiarsBarState {
             hands: this.hands,
             revolverDecks: this.revolverDecks,
             revolverPointers: this.revolverPointers,
+            failedChallenges: this.failedChallenges,
             alive: [...this.alive],
             tableDeck: this.tableDeck,
             tableRank: this.tableRank,
@@ -410,6 +438,7 @@ class LiarsBarState {
         s.hands = data.hands || {};
         s.revolverDecks = data.revolverDecks || {};
         s.revolverPointers = data.revolverPointers || {};
+        s.failedChallenges = data.failedChallenges || {};
         s.alive = new Set(data.alive || data.players);
         s.tableDeck = data.tableDeck || [];
         s.tableRank = data.tableRank || null;

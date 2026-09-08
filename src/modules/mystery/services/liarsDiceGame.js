@@ -1197,7 +1197,7 @@ class LiarsDiceGame {
             if (isNewTurn) {
                 parts.push(`# ⚡轮到 ${this.plainName(current)} ${state.currentBid != null ? '加注或开牌！' : '叫点！'}`);
             }
-            parts.push(`⏳ <t:${Math.floor(Date.now() / 1000) + TURN_SECONDS + GRACE_SECONDS}:R> 超时${state.currentBid != null ? '自动开牌' : '自动叫点'}`);
+            parts.push(`⏳ <t:${Math.floor(Date.now() / 1000) + TURN_SECONDS + GRACE_SECONDS}:R> 超时${state.currentBid != null ? '自动开牌（默认不信）' : '自动叫点'}`);
             parts.push('');
         }
         parts.push(`**当前叫点：${bidText(state.currentBid)}**（全场 ${state.totalDice()} 颗骰）`);
@@ -1261,7 +1261,7 @@ class LiarsDiceGame {
 
             const openBtn = new ButtonBuilder()
                 .setCustomId(`mystery_liars_dice_open:${this.id}:${state.turnToken}`)
-                .setLabel('🤥 开牌！')
+                .setLabel('🤥 质疑开牌！')
                 .setStyle(ButtonStyle.Danger);
             if (!state.canOpen(current)) openBtn.setDisabled(true); // 首叫前不可开牌
             row0.addComponents(openBtn);
@@ -1285,7 +1285,7 @@ class LiarsDiceGame {
             lastRow.addComponents(
                 new ButtonBuilder()
                     .setCustomId(`mystery_liars_dice_look_dice:${this.id}:${state.turnToken}`)
-                    .setLabel('🎯 看我的骰子')
+                    .setLabel('👁 我的骰子')
                     .setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder()
                     .setCustomId(`mystery_liars_dice_refresh:${this.id}`)
@@ -1413,7 +1413,7 @@ class LiarsDiceGame {
         if (shownCountOptions.length) {
             const countMenu = new StringSelectMenuBuilder()
                 .setCustomId(`mystery_liars_dice_bid_count:${this.id}:${state.turnToken}`)
-                .setPlaceholder(pending?.count != null ? `数量已选：${pending.count}` : '① 选数量（几颗）')
+                .setPlaceholder(pending?.count != null ? `数量已选：${pending.count}` : '① 选数量（只能比上一手更狠）')
                 .addOptions(shownCountOptions.map(c => new StringSelectMenuOptionBuilder()
                     .setLabel(`${c} 个`)
                     .setValue(String(c))));
@@ -1545,7 +1545,7 @@ class LiarsDiceGame {
             content: `🎯 精准开牌确认：你认定「**${bid.count} 个 ${bid.face}」正好就是实际数量**（含万能 ⚀）。\n`
                 + '　✅ 正好 → **除你外全场各失 1 骰**（大赚）\n'
                 + '　❌ 不正好 → 你自己失 1 骰\n'
-                + '确定要拍吗？再点一次下方按钮确认。',
+                + '确认要赌吗？再点一次下方按钮。',
             components: [new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                     .setCustomId(`mystery_liars_dice_spot_on_go:${this.id}:${state.turnToken}`)
@@ -1577,7 +1577,7 @@ class LiarsDiceGame {
                 + '轮流叫点：声称「全场至少有 X 个 Y 点」——每次叫点必须比上一手更狠：'
                 + '数量更多，或同数量点数更大（1 不可叫）。\n\n'
                 + '**🤥 开牌与精准开牌**\n'
-                + '轮到你时可以开牌质疑上一手的叫点：全场数骰，被叫点数与万能 ⚀（1）都计入。\n'
+                + '轮到你时可以**开牌（=质疑）**上一手的叫点：全场亮骰数数，被叫点数与万能 ⚀（1）都计入。\n'
                 + '　• 数量**够** → 叫点成立，**开牌者**失 1 骰；\n'
                 + '　• 数量**不够** → 叫点者吹牛，**叫点者**失 1 骰；\n'
                 + '**🎯 精准开牌**：认定上一手「正好是实际数量」——'
@@ -1701,7 +1701,7 @@ class LiarsDiceGame {
             const calledBid = result.calledBid || {};
             const parts = [];
             for (const [pid, faces] of Object.entries(result.revealedDice || {})) {
-                parts.push(`${this.shortName(pid)}：${faces.join(' ')}`);
+                parts.push(`${this.shortName(pid)}：${faces.map(f => diceFace(f)).join(' ')}`);
             }
             const verb = result.action === 'spot_on' ? '🎯 精准开牌' : '🤥 开牌';
             lines.push(`${verb}！${actor} 挑战「${calledBid.count} 个 ${calledBid.face}」——全场亮骰：`);

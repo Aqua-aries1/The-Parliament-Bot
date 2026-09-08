@@ -91,7 +91,8 @@ guild.members.fetch = async id => guild.members.cache.get(id) || null;
             // 输家出局：新一轮先手顺位给下一位存活者。
             check(rc.firstPlayerId !== rc.eliminatedId, '出局者不当先手（顺位存活者）');
         } else {
-            check(rc.firstPlayerId === rc.loserId, '存活输家 = 新一轮先手');
+            // 两振制+先手下家（R4 平衡改动）：存活输家不当先手，先手=输家的下家。
+            check(rc.firstPlayerId !== rc.loserId, '新一轮先手 = 输家的下家（不再是输家本人）');
         }
         check(rc.challengeTableRank != null, '开牌时点数已留档');
         // 左轮堆翻掉一张。

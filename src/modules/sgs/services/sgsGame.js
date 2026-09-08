@@ -422,13 +422,14 @@ async function showRulesHelp(interaction) {
             text = (
                 '**🎴 卡牌与锦囊对抗**\n' +
                 '• **基本牌**：【杀】（出牌阶段限一次）、【闪】（回避攻击）、【桃】（回复体力或濒死救援）。\n' +
-                '• **普通锦囊**：过河拆桥、顺手牵羊（距离 1）、决斗、无中生有、桃园结义、五谷丰登、南蛮入侵、万箭齐发。\n' +
+                '• **普通锦囊**：过河拆桥（弃目标一张牌）、顺手牵羊（拿目标一张牌，限距离 1）、决斗（轮流出【杀】，先不出者受伤）、无中生有（自己摸 2 张）、桃园结义（全场回复 1 点）、五谷丰登（每人各选 1 张）、南蛮入侵（全场需出【杀】否则受伤）、万箭齐发（全场需出【闪】否则受伤）。\n' +
                 '• **⚡ 无懈可击抢断窗**：普通锦囊打出后，全场进入 12 秒抢断倒计时，任何人持有无懈可击均可抢按抵消！\n' +
                 '• **延时锦囊**：乐不思蜀（跳过出牌）、兵粮寸断（跳过摸牌）、闪电（3点雷击伤害，自动移交下一个玩家判定）。'
             );
         } else if (val === 'equips') {
             text = (
                 '**⚔️ 经典武器与防具特效**\n' +
+                '• **距离**：相邻座位为 1；【进攻坐骑】-1、【防御坐骑】+1；武器决定你的攻击范围。\n' +
                 '• **诸葛连弩**：出牌阶段使用【杀】无次数限制。\n' +
                 '• **丈八蛇矛**：可以将任意 2 张手牌当作一张【杀】使用或打出。\n' +
                 '• **青龙偃月刀**：使用的【杀】被【闪】抵消后，可立即追加打出一张【杀】！\n' +
@@ -479,8 +480,12 @@ async function showNullifyFlow(session, interaction) {
             .setStyle(ButtonStyle.Success)
     ));
     const row = new ActionRowBuilder().addComponents(buttons);
+    // 给足上下文：谁对谁用了什么锦囊（手机上 ephemeral 弹层会盖住主面板的战场信息）。
+    const trickUser = game.players.find(p => p.userId === String(top.data.user_id));
+    const trickTarget = top.data.target_id ? game.players.find(p => p.userId === String(top.data.target_id)) : null;
+    const trickLine = `${trickUser ? trickUser.name : '？'} 使用的【${top.data.trick_name}】${trickTarget ? `（目标：${trickTarget.name}）` : ''}`;
     const reply = await interaction.reply({
-        content: `⚡ 发现锦囊【${top.data.trick_name}】，请抢出【无懈可击】：`,
+        content: `⚡ ${trickLine} 即将生效——要抢出【无懈可击】抵消吗？`,
         components: [row],
         ephemeral: true,
         fetchReply: true,
@@ -547,6 +552,12 @@ async function handleMainAction(session, interaction, action, token) {
         return;
     }
 
+    if (action === 'rules') {
+        // 主面板同样提供规则入口（招募面板原有的路由保留不动）。
+        await showRulesHelp(interaction);
+        return;
+    }
+
     if (action === 'hand') {
         const embed = renderPrivate(game, userId);
         if (!embed) {
@@ -565,7 +576,7 @@ async function handleMainAction(session, interaction, action, token) {
     if (action === 'respond') {
         const top = game.pendingTop;
         if (!top) {
-            await interaction.reply({ content: '现在没有需要响应的结算。', ephemeral: true });
+            await interaction.reply({ content: '现在没有需要响应的结算——只有别人对你出【杀】或锦囊时才需要响应。', ephemeral: true });
             return;
         }
         // 无懈抢断窗与「响应」共用同一入口（抢断窗对全桌开放）。
@@ -687,7 +698,7 @@ async function showRespondModal(session, interaction) {
                 .setLabel(`💊 打出 ${x.card.short} 救援`)
                 .setStyle(ButtonStyle.Success)
         ));
-        buttons.push(new ButtonBuilder().setCustomId('sgs_resp_decline').setLabel('放弃救援').setStyle(ButtonStyle.Danger));
+        buttons.push(new ButtonBuilder().setCustomId('sgs_resp_decline').setLabel('放弃救援（TA 将阵亡）').setStyle(ButtonStyle.Danger));
         rows.push(new ActionRowBuilder().addComponents(buttons));
     } else if (kind === 'zone') {
         const options = info.choices.map((c, i) => ({
@@ -734,14 +745,37 @@ async function showRespondModal(session, interaction) {
         buttons.push(
             new ButtonBuilder()
                 .setCustomId('sgs_resp_pass')
-                .setLabel('放弃响应')
+                .setLabel(kind === 'attack' ? '放弃响应（将受到伤害）' : '放弃响应')
                 .setStyle(ButtonStyle.Danger),
         );
         rows.push(new ActionRowBuilder().addComponents(buttons));
     }
 
+    // 给足上下文：每种响应各自在对抗什么、不响应的后果是什么。
+    let kindLine;
+    if (kind === 'attack') {
+        kindLine = '⏳ 你正被【杀】指定——出【闪】（或用【八卦阵】判定）闪避，不响应将受到伤害。';
+    } else if (kind === 'aoe') {
+        const top = game.pendingTop;
+        kindLine = `⏳ 锦囊【${top?.data?.trick_name || 'AOE'}】波及你——出【${top?.data?.needed || ''}】自保，不响应将受到伤害。`;
+    } else if (kind === 'duel') {
+        kindLine = '⏳ 【决斗】进行中——出【杀】继续对抗，不出将受到伤害。';
+    } else if (kind === 'dying') {
+        kindLine = '⚠️ 有角色濒死——出【桃】救援，放弃则 TA 将阵亡。';
+    } else if (kind === 'blade_pursue') {
+        kindLine = '🗡️ 【青龙偃月刀】追击窗口——可追加出【杀】继续进攻，或放弃。';
+    } else if (kind === 'bow_mount') {
+        kindLine = '🏹 【麒麟弓】拆马窗口——可选择拆掉对方坐骑，或放弃。';
+    } else if (kind === 'zone') {
+        kindLine = '📦 请选择要获取/弃置的目标区域。';
+    } else if (kind === 'discard') {
+        kindLine = '🗑️ 请勾选要弃置的手牌（弃牌阶段或锦囊要求）。';
+    } else {
+        kindLine = '请作出响应：';
+    }
+
     const reply = await interaction.reply({
-        content: '请作出响应：',
+        content: kindLine,
         components: rows,
         ephemeral: true,
         fetchReply: true,
@@ -840,8 +874,14 @@ async function showPlayFlowModal(session, interaction) {
         ));
     }
 
+    // 教学提示：被过滤的响应牌（闪/无懈）不在菜单里，新手常误以为手牌"坏了"。
+    const hiddenCount = player.hand.length - options.length;
+    const playNote = hiddenCount > 0
+        ? '\n（【闪】【无懈可击】等响应牌不在此列出，轮到你响应时才会出现）'
+        : '';
+
     const reply = await interaction.reply({
-        content: '请选择出牌方式：',
+        content: `请选择出牌方式：${playNote}`,
         components: rows,
         ephemeral: true,
         fetchReply: true,

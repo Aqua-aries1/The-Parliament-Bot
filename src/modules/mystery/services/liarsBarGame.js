@@ -616,7 +616,7 @@ class LiarsBarGame {
         if (result.action === 'challenge') {
             // 质疑：开牌 + 左轮翻牌播报，然后要么出局惩罚结算面板，要么新一轮主面板。
             this.turnStartedAt = Date.now();
-            await this.sendBroadcastLocked({ title: result.liar ? '🤥 骗子被抓！' : '😬 质疑失败' });
+            await this.sendBroadcastLocked({ title: result.liar ? '🤥 骗子被抓！' : (result.pardonedChallenge ? '😬 质疑失败（首次失手免翻）' : '😬 质疑失败') });
             if (result.eliminatedId != null) {
                 // 惩罚决定人 = 对决的另一方（质疑者/被开牌人中不是输家的那个）；
                 // 终局性出局（如 2 人局）也要先惩罚再结算，决定人 = 最终胜者。
@@ -1281,8 +1281,8 @@ class LiarsBarGame {
         const seated = this.participants.map(p => mention(p)).join('　');
         embed.setDescription(
             `**${this.shortName(this.initiatorId)}** 摆开了一张酒馆牌桌。\n\n`
-            + '**规则一句话**：每轮翻一张桌面点数，每人盖一手牌（1-3 张）声称「全是这个点数」——可以撒谎；'
-            + '任何人都可抢先拍桌质疑。输家（被抓的骗子或冤枉者）翻左轮牌堆 1 张（首翻致命率 1/4，越翻越危险）：空包侥幸，致命出局。\n\n'
+            + '**怎么玩**：每轮亮一张「桌面点数」，每人盖一手牌（1-3 张）声称全是它——可以撒谎；'
+            + '任何人都能**质疑（=开牌：翻开上一手验证真假）**——抓到骗子，骗子翻左轮；质疑失手首次只记警告，再失手才翻（首翻 1/4 致命，越翻越危险）：空包侥幸，致命出局。\n\n'
             + `🪑 已入座（${this.participants.length}/${MAX_PLAYERS}）：${seated}\n\n`
             + `🔨 每个出局者都当场受罚：抓到的人（或顺位存活者）给输家选 🔇 禁言 ${PENALTY_MUTE_MINUTES} 分 / ✏️ 改名 ${PENALTY_RENAME_MINUTES} 分；活到最后的唯一幸存者是胜者，不受罚。\n\n`
             + `⏳ <t:${deadline}:R> 后桌子自动收摊；发起人可随时点 **🎬 开局**（≥${MIN_PLAYERS} 人）。`
@@ -1351,7 +1351,7 @@ class LiarsBarGame {
                     ? `# ⚡轮到 ${this.plainName(current)} 开牌！`
                     : `# ⚡轮到 ${this.plainName(current)} 出牌！`);
             }
-            parts.push(`⏳ <t:${Math.floor(Date.now() / 1000) + TURN_SECONDS + GRACE_SECONDS}:R> 超时自动行动`);
+            parts.push(`⏳ <t:${Math.floor(Date.now() / 1000) + TURN_SECONDS + GRACE_SECONDS}:R> 超时自动出牌（不会替你质疑）`);
             if (state.mustChallenge) parts.push('⚠️ 全员已盖完牌——**必须开牌质疑**！');
             parts.push('');
         }
@@ -1378,7 +1378,7 @@ class LiarsBarGame {
             const oddsText = odds >= 1 ? '必死' : `1/${denom}（${(odds * 100).toFixed(0)}%）`;
             const played = state.playedThisRound.has(playerId) ? '✅ 已盖牌' : '⬜ 未盖';
             const lines = [
-                `${mention(playerId)}　🃏 ${alive ? state.handCards(playerId).length : 0}　${played}`,
+                `${mention(playerId)}　🎴 手牌 ${alive ? state.handCards(playerId).length : 0}　${played}`,
                 `🔫 中弹率：${oddsText}`,
             ];
             if (idx < ordered.length - 1) lines.push('​');
@@ -1410,7 +1410,7 @@ class LiarsBarGame {
             const anyChallenger = state.players.some(p => state.canChallenge(p));
             const challengeBtn = new ButtonBuilder()
                 .setCustomId(`mystery_liars_bar_challenge:${this.id}:${state.turnToken}`)
-                .setLabel('🤥 质疑！')
+                .setLabel(state.lastPlay ? `🤥 质疑 @${this.plainName(state.lastPlay.playerId)}！` : '🤥 质疑上一手！')
                 .setStyle(ButtonStyle.Danger);
             if (!anyChallenger) challengeBtn.setDisabled(true); // 第一手：无人可质疑
             row0.addComponents(challengeBtn);
@@ -1561,15 +1561,15 @@ class LiarsBarGame {
                 + '声称「全是桌面点数」——可以撒谎。\n'
                 + '**🤥 质疑对全桌开放**：任何其他玩家（不限下家）都可**抢先拍桌**——先到先得。\n'
                 + '　• 非桌面点数的牌 = 假牌；小丑万能但**每手只认第一张**（第二张起算假牌）；\n'
-                + '　• 输家（骗子或冤枉者）统一翻 1 张左轮；\n'
+                + '　• 被抓的骗子翻 1 张左轮；质疑失败首次免翻只记警告，再次失手才翻；\n'
                 + '　• 第一手不可质疑；全员盖完/无牌可盖时强制开牌。\n\n'
                 + '**🔫 出局惩罚（左轮牌堆）**\n'
-                + '每轮输家（被抓的骗子 / 质疑失败者）翻自己专属左轮牌堆顶牌（1 致命 + 3 空包共 4 张，'
+                + '左轮翻牌者（被抓的骗子 / 失手两次的质疑者）翻自己专属左轮牌堆顶牌（1 致命 + 3 空包共 4 张，'
                 + '统一翻 1 张、翻掉不回填，越罚越危险——首翻 1/4，第 4 发必死）：\n'
                 + '　• 空包——侥幸存活，继续下一轮；\n'
                 + `　• 致命——出局，并由抓到的人选择 🔇 禁言 ${PENALTY_MUTE_MINUTES} 分 / ✏️ 改名 ${PENALTY_RENAME_MINUTES} 分`
                 + `（${PENALTY_SETTLEMENT_SECONDS} 秒不选自动禁言 ${PENALTY_AUTO_MUTE_MINUTES} 分）。\n\n`
-                + '**🔁 流转**：新一轮先手 = 上一轮的输家；桌面点数牌堆翻尽重洗。\n\n'
+                + '**🔁 流转**：新一轮先手 = 上一轮输家的下家；桌面点数牌堆翻尽重洗。\n\n'
                 + '**🏆 胜利与惩罚总则**：**每个出局者都当场受罚一次**（质疑致命 / 认输 / 失格，'
                 + '认输与失格减轻为 3 / 6 分）；活到最后的**唯一幸存者是胜者，不受任何惩罚**。\n\n'
                 + `**⏱ 回合**：每回合 ${TURN_SECONDS} 秒，超时自动出牌（有真牌出真牌，没真牌随机吹牛），不会自动质疑。\n\n`
@@ -1625,7 +1625,7 @@ class LiarsBarGame {
             const isFinal = this.state?.phase === 'ended';
             parts.push(
                 `💀 出局者：${mention(this.penaltyLoserId)}　⚖️ 惩罚决定人：${mention(this.penaltyDeciderId)}${isFinal ? '（这是最后一罚，罚完即终局）' : ''}\n`
-                + `🔨 **${mention(this.penaltyDeciderId)}，轮到你收利息了**：`
+                + `🔨 **${mention(this.penaltyDeciderId)}，轮到你决定惩罚**：`
                 + `🔇 禁言 ${muteMin} 分钟，或 ✏️ 改名 ${renameMin} 分钟（可自定义新名字）——点下方按钮。`
                 + `${PENALTY_SETTLEMENT_SECONDS} 秒内不选，桌子替你做主：**自动禁言 ${PENALTY_AUTO_MUTE_MINUTES} 分钟**。`
             );
@@ -1700,8 +1700,12 @@ class LiarsBarGame {
                 lines.push(`😮 ${accused} 是诚实的——${actor} 冤枉好人`);
             }
             const loser = this.shortName(result.loserId);
-            const flips = (result.revolverFlips || []).map(f => (f ? '💀致命' : '空包'));
-            lines.push(`🔫 ${loser}：${flips.join(' → ')}`);
+            if (result.pardonedChallenge) {
+                lines.push(`🙏 ${actor} 首次失手，免翻左轮——记一次警告，再失手就要翻了。`);
+            } else {
+                const flips = (result.revolverFlips || []).map(f => (f ? '💀致命' : '空包'));
+                lines.push(`🔫 ${loser}：${flips.join(' → ')}`);
+            }
             if (result.lethal) lines.push(`💀 **${loser} 出局**`);
             if (!result.gameEnded && result.newRound) {
                 lines.push(`\n🎴 新一轮：桌面 **${rankLabel(result.newTableRank)}**，先手 ${this.shortName(result.firstPlayerId)}。`);
