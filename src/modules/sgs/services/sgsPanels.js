@@ -192,7 +192,13 @@ function renderMain(game, logLines = null) {
     }
 
     if (logLines && logLines.length > 0) {
-        embed.addFields({ name: '战报', value: logLines.join('\n').slice(0, 1000) || '—', inline: false });
+        // 超 1000 字按行边界裁（字符硬切会把 emoji/粗体标记切半，渲染出破行）。
+        let text = logLines.join('\n');
+        if (text.length > 1000) {
+            const cut = text.lastIndexOf('\n', 1000);
+            text = cut > 200 ? text.slice(0, cut) + '\n…' : `${text.slice(0, 1000)}…`;
+        }
+        embed.addFields({ name: '战报', value: text || '—', inline: false });
     }
 
     embed.setFooter({ text: `牌库+弃牌 ${view.deckCount} 张｜点「🃏 我的信息」查看私密手牌` });

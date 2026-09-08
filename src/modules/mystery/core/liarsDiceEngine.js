@@ -80,6 +80,7 @@ class LiarsDiceState {
         this.turnToken = 0;
         this.roundNumber = 0;
         this.spotOnCooldown = null; // spot_on 失手者冷却一轮
+        this.stats = {};            // playerId -> 本局统计（复盘用，纯内存）
         const startDice = START_DICE_BY_PLAYERS[unique.length] ?? DEFAULT_START_DICE;
         for (const pid of unique) this.dice[pid] = new Array(startDice).fill(1);
         const first = firstPlayerId != null && unique.includes(firstPlayerId)
@@ -206,6 +207,7 @@ class LiarsDiceState {
         const face = bid?.face;
         assert(this.canBid(actorId, count, face), '这个叫点不合法：必须比上一手更狠（数量更多，或同数量点数更大；1 不可叫）。');
         this.currentBid = { playerId: actorId, count, face };
+        this._stat(actorId).bids += 1;
         this._advanceTurn(actorId);
         const result = defaultActionResult('bid', actorId);
         result.bid = { count, face };
@@ -226,7 +228,15 @@ class LiarsDiceState {
     }
 
     // 单人失 1 骰；归零出局（不在此处终局判定）。返回 是否出局。
+    _stat(pid) {
+        if (!this.stats[pid]) {
+            this.stats[pid] = { bids: 0, opens: 0, opensWon: 0, opensLost: 0, spotOnTries: 0, spotOnHits: 0, diceLost: 0 };
+        }
+        return this.stats[pid];
+    }
+
     _loseDie(playerId) {
+        this._stat(playerId).diceLost += 1;
         this.dice[playerId] = (this.dice[playerId] || []).slice(0, -1);
         if (this.diceCount(playerId) > 0) return false;
         this.alive.delete(playerId);
@@ -259,6 +269,12 @@ class LiarsDiceState {
         result.totalCalled = total;
         result.bidHolds = bidHolds;
         result.loserId = loserId;
+        const stO = this._stat(actorId);
+        stO.opens += 1;
+        if (loserId != null) {
+            if (bidHolds) stO.opensLost += 1;
+            else stO.opensWon += 1;
+        }
         const out = [];
         if (loserId != null && this._loseDie(loserId)) out.push(loserId);
         result.eliminatedIds = out;
@@ -289,6 +305,9 @@ class LiarsDiceState {
         result.revealedDice = revealed;
         result.totalCalled = total;
         result.spotOn = exact;
+        const stS = this._stat(actorId);
+        stS.spotOnTries += 1;
+        if (exact) stS.spotOnHits += 1;
         result.loserId = exact ? null : actorId;
         const lines = [];
         if (exact) {
@@ -359,6 +378,7 @@ class LiarsDiceState {
             turnToken: this.turnToken,
             roundNumber: this.roundNumber,
             spotOnCooldown: this.spotOnCooldown,
+            stats: this.stats,
         };
     }
 
@@ -373,6 +393,7 @@ class LiarsDiceState {
         s.turnToken = data.turnToken || 0;
         s.roundNumber = data.roundNumber || 1;
         s.spotOnCooldown = data.spotOnCooldown ?? null;
+        s.stats = data.stats || {};
         return s;
     }
 }

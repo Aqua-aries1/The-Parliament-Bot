@@ -103,6 +103,8 @@ class LiarsBarState {
         this.hands = {};
         this.revolverDecks = {}; // playerId -> 布尔数组（true=致命），游标即数组长度递减
         this.failedChallenges = {}; // playerId -> 质疑失手次数（两振制：首次失手免翻左轮）
+        this.roundPlays = [];       // 本轮声明链：[{ playerId, count }]，复盘面板与"谁说了什么"可读化
+        this.stats = {};            // playerId -> 本局统计（复盘用，不入任何持久库）
         this.alive = new Set(unique);
         this.tableDeck = [];     // 桌面牌堆（剩余可翻的点数）
         this.tableRank = null;   // 本轮桌面点数
@@ -227,6 +229,7 @@ class LiarsBarState {
         this.lastPlay = null;
         this.pileCount = 0;
         this.playedThisRound = new Set();
+        this.roundPlays = [];
         const deck = this.rng.shuffle(buildLiarDeck());
         for (const pid of this.players) {
             this.hands[pid] = this.alive.has(pid) ? deck.splice(0, HAND_SIZE) : [];
@@ -292,6 +295,11 @@ class LiarsBarState {
         this.lastPlay = { playerId: actorId, cards, count: cards.length };
         this.pileCount += cards.length;
         this.playedThisRound.add(actorId);
+        this.roundPlays.push({ playerId: actorId, count: cards.length });
+        const st = this._stat(actorId);
+        st.plays += 1;
+        st.cards += cards.length;
+        if (cards.some(c => c !== this.tableRank && c !== JOKER)) st.bluffs += 1;
         this._advanceTurn(actorId);
         const result = defaultActionResult('play_cards', actorId);
         result.playedCards = cards;
@@ -313,6 +321,13 @@ class LiarsBarState {
             return card !== this.tableRank;
         });
         const loserId = liar ? accused : actorId;
+
+        const stA = this._stat(actorId);
+        stA.challenges += 1;
+        if (liar) {
+            stA.challengeWins += 1;
+            this._stat(accused).caught += 1;
+        }
 
         const result = defaultActionResult('challenge', actorId);
         result.revealedCards = cards;
@@ -339,6 +354,9 @@ class LiarsBarState {
             const ptr = this.revolverPointers[loserId] || 0;
             const lethal = ptr < revolver.length ? revolver[ptr] : true;
             this.revolverPointers[loserId] = ptr + 1;
+            const stL = this._stat(loserId);
+            stL.spins += 1;
+            if (!lethal) stL.spinsSurvived += 1;
             result.lethal = lethal;
             result.revolverFlips = [lethal];
 
@@ -364,6 +382,14 @@ class LiarsBarState {
         result.newTableRank = this.tableRank;
         result.firstPlayerId = this.turnPlayerId;
         return result;
+    }
+
+    // 本局统计条目（复盘面板用；纯内存，不进任何持久库）。
+    _stat(pid) {
+        if (!this.stats[pid]) {
+            this.stats[pid] = { plays: 0, cards: 0, bluffs: 0, caught: 0, challenges: 0, challengeWins: 0, spins: 0, spinsSurvived: 0 };
+        }
+        return this.stats[pid];
     }
 
     // 座位顺位上 playerId 的下一位存活者（不含本人）；找不到返回 null。
@@ -423,6 +449,8 @@ class LiarsBarState {
             roundNumber: this.roundNumber,
             pileCount: this.pileCount,
             playedThisRound: [...this.playedThisRound],
+            roundPlays: this.roundPlays,
+            stats: this.stats,
             lastPlay: this.lastPlay,
             turnPlayerId: this.turnPlayerId,
             turnToken: this.turnToken,
@@ -439,6 +467,8 @@ class LiarsBarState {
         s.revolverDecks = data.revolverDecks || {};
         s.revolverPointers = data.revolverPointers || {};
         s.failedChallenges = data.failedChallenges || {};
+        s.roundPlays = data.roundPlays || [];
+        s.stats = data.stats || {};
         s.alive = new Set(data.alive || data.players);
         s.tableDeck = data.tableDeck || [];
         s.tableRank = data.tableRank || null;

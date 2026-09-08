@@ -1369,6 +1369,10 @@ class LiarsBarGame {
             parts.push('');
         }
         parts.push(`**🎴 桌面点数：${rankLabel(state.tableRank)}**`);
+        // 本轮声明链：盖牌是暗的，但"谁盖了几张"是公开动作——异步对局里人最容易忘这个。
+        if (state.roundPlays?.length) {
+            parts.push(`📜 本轮声明：${state.roundPlays.map(rp => `${this.shortName(rp.playerId)}×${rp.count}`).join(' → ')}（可质疑最后一手）`);
+        }
         if (state.lastPlay != null) {
             parts.push(`**${this.shortName(state.lastPlay.playerId)}** 盖了 **${state.lastPlay.count}** 张`);
         } else {
