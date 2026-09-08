@@ -1673,6 +1673,17 @@ class LiarsBarGame {
         if (this.pendingAnnouncement) parts.push(this.pendingAnnouncement.trim());
         if (this.lastEvent) parts.push(this.lastEvent);
         embed.setDescription(parts.join('\n\n'));
+        // 终局复盘：本局每人的撒谎/质疑/翻轮数据（引擎内存统计，随对局对象存活）。
+        const recapState = this.state;
+        if (recapState?.stats && Object.keys(recapState.stats).length > 0) {
+            const lines = recapState.players.map(pid => {
+                const s = recapState.stats[pid];
+                if (!s) return null;
+                const tag = pid === this.finalWinnerId ? '🏆 ' : '';
+                return `${tag}${this.plainName(pid)}：出 ${s.plays} 手 ${s.cards} 张 · 撒谎 ${s.bluffs}（被拆 ${s.caught}）· 质疑 ${s.challenges}（抓到 ${s.challengeWins}）· 翻轮 ${s.spins}（存活 ${s.spinsSurvived}）`;
+            }).filter(Boolean);
+            if (lines.length) embed.addFields({ name: '📊 本局复盘', value: lines.join('\n').slice(0, 1024) });
+        }
         return embed;
     }
 

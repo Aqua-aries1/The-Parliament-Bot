@@ -154,8 +154,9 @@ class GameSession {
                     this.recordEvents(res.events);
                 } else {
                     const cur = this.game.current;
-                    if (!cur.autoPlay) {
-                        // 玩家已手动接管（解除托管未换 token 的窗口期），不要抢结束回合。
+                    if (!cur.autoPlay && Date.now() - (cur.autoPlayClearedAt || 0) < AUTO_PLAY_GRACE_SEC * 1000) {
+                        // 仅"刚解除托管"的竞态窗口（旧 8s 定时器还在途）放行重排；
+                        // 普通挂机必须走下方托管主路径，否则任何人都可挂机冻结全桌。
                         this.armTimer();
                         return;
                     }
@@ -250,7 +251,7 @@ async function handleRecruitAction(session, interaction, action) {
 
     if (action === 'join') {
         // 剥离 markdown 控制字符：名字会进公开面板的 code span 与标题，反引号/井号可伪造系统文案。
-        const safeName = String(userName || '').replace(/[`#*_|~><]/g, '');
+        const safeName = String(userName || '').replace(/[`#*_|~><]/g, '').trim() || `玩家${String(userId).slice(-4)}`;
         const r = await session.runGameAction(() => {
             const msg = game.join(userId, safeName);
             store.save(game.guildId, game.serialize());
@@ -485,6 +486,12 @@ async function showNullifyFlow(session, interaction, token) {
         return;
     }
 
+    // 同响应面板：抢断窗内打开即续期一次（无懈窗全场开放，任何持有者都可触发）。
+    if (session.renewedForToken !== game.actionToken) {
+        session.renewedForToken = game.actionToken;
+        session.armTimer();
+    }
+
     const buttons = nullifies.slice(0, 5).map(x => (
         new ButtonBuilder()
             .setCustomId(`sgs_do_nullify_${x.index}`)
@@ -541,6 +548,7 @@ async function handleMainAction(session, interaction, action, token) {
     if (player && player.autoPlay) {
         await session.withLock(async () => {
             player.autoPlay = false;
+            player.autoPlayClearedAt = Date.now(); // 供超时守护识别"刚接管"窗口
             store.save(game.guildId, game.serialize());
             // 解除托管必须按非托管时限重排死线：托管期武装的 8 秒旧定时器
             // 不重排的话仍会到期，强制结束刚接管玩家的回合。
@@ -555,6 +563,7 @@ async function handleMainAction(session, interaction, action, token) {
         }
         await session.withLock(async () => {
             player.autoPlay = false;
+            player.autoPlayClearedAt = Date.now(); // 同上
             store.save(game.guildId, game.serialize());
             session.armTimer(); // 同上：取消托管要重排死线
         });
@@ -672,6 +681,16 @@ async function showRespondModal(session, interaction, token) {
     if (!info || !info.playable) {
         await interaction.reply({ content: '暂无可用响应。', ephemeral: true });
         return;
+    }
+
+    // 打开面板即续期一次（每个结算窗口仅一次）：避免"死线最后一刻才打开面板被代打"，
+    // 也防无限续期拖延。armTimer 按当前状态重算时长（托管者仍只给 8 秒）。
+    {
+        const top = game.pendingTop;
+        if (top && top.deciderId === userId && session.renewedForToken !== game.actionToken) {
+            session.renewedForToken = game.actionToken;
+            session.armTimer();
+        }
     }
 
     const kind = info.kind;

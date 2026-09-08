@@ -428,6 +428,14 @@ class LiarsBarState {
             const next = this._nextHolderWithCards(actorId);
             this.turnPlayerId = next != null ? next : this.turnPlayerId;
         }
+        // 空手死角：本轮最后声明已作废（lastPlay=null）且其余存活者全部无手牌——
+        // 无人能盖、无牌可质疑，回合会指向死者空转；直接重开一轮。
+        if (!this.lastPlay && [...this.alive].every(pid => (this.hands[pid] || []).length === 0)) {
+            this._startRound(this._nextAliveAfter(actorId) ?? actorId);
+            result.newRound = true;
+            result.newTableRank = this.tableRank;
+            result.firstPlayerId = this.turnPlayerId;
+        }
         this.turnToken += 1;
         return result;
     }

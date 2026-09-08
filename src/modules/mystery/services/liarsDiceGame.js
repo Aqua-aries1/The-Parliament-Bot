@@ -1647,7 +1647,7 @@ class LiarsDiceGame {
             const isFinal = this.state?.phase === 'ended';
             parts.push(
                 `💀 出局者：${mention(this.penaltyLoserId)}　⚖️ 决定人：${mention(this.penaltyDeciderId)}${isFinal ? '（最后一罚，罚完即终局）' : ''}\n`
-                + `🔨 **${mention(this.penaltyDeciderId)}，轮到你收利息**：`
+                    + `🔨 **${mention(this.penaltyDeciderId)}，轮到你决定惩罚**：`
                 + `🔇 禁言 ${muteMin} 分钟，或 ✏️ 改名 ${renameMin} 分钟——点下方按钮。`
                 + `${PENALTY_SETTLEMENT_SECONDS} 秒不选则自动禁言 ${PENALTY_AUTO_MUTE_MINUTES} 分钟。`
             );
@@ -1676,6 +1676,17 @@ class LiarsDiceGame {
         if (this.pendingAnnouncement) parts.push(this.pendingAnnouncement.trim());
         if (this.lastEvent) parts.push(this.lastEvent);
         embed.setDescription(parts.join('\n\n'));
+        // 终局复盘：叫点/开牌/精准开/失骰数据（引擎内存统计，随对局对象存活）。
+        const recapState = this.state;
+        if (recapState?.stats && Object.keys(recapState.stats).length > 0) {
+            const lines = recapState.players.map(pid => {
+                const s = recapState.stats[pid];
+                if (!s) return null;
+                const tag = pid === this.finalWinnerId ? '🏆 ' : '';
+                return `${tag}${this.plainName(pid)}：叫点 ${s.bids} · 开牌 ${s.opens}（抓到 ${s.opensWon}/判错 ${s.opensLost}）· 精准 ${s.spotOnTries}（命中 ${s.spotOnHits}）· 失骰 ${s.diceLost}`;
+            }).filter(Boolean);
+            if (lines.length) embed.addFields({ name: '📊 本局复盘', value: lines.join('\n').slice(0, 1024) });
+        }
         return embed;
     }
 
@@ -1725,7 +1736,11 @@ class LiarsDiceGame {
                     ? `**正好！** 除 ${actor} 外全场各失 1 骰`
                     : `不是正好——${actor} 自己失 1 骰`}`);
             } else {
-                lines.push(`实际 ${result.totalCalled} 个（含万能 ⚀）——${result.bidHolds ? `**叫点成立**，${actor} 失 1 骰` : `**吹牛成立**，${this.shortName(calledBid.playerId)} 失 1 骰`}`);
+                lines.push(`实际 ${result.totalCalled} 个（含万能 ⚀）——${result.bidHolds
+                    ? `**叫点成立**，${actor} 失 1 骰`
+                    : result.loserId == null
+                        ? '**叫点不成立**——叫点人已离席，声明随人作废，无人受罚'
+                        : `**吹牛成立**，${this.shortName(calledBid.playerId)} 失 1 骰`}`);
             }
             const outs = result.eliminatedIds?.length ? result.eliminatedIds : (result.eliminatedId ? [result.eliminatedId] : []);
             if (outs.length) {
