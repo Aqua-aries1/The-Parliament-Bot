@@ -10,11 +10,13 @@ const path = require('node:path');
 
 let temporaryFileSequence = 0;
 
-function logFailure(operation, error) {
-    console.error(`[DevilRouletteResume] ${operation} failed:`, error);
+function logFailure(logTag, operation, error) {
+    console.error(`[${logTag}] ${operation} failed:`, error);
 }
 
-function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
+// logTag：日志前缀参数。骗子酒馆/骰子的快照存储直接复用本工厂（同构代码不值得三份各自维护），
+// 各自传入标签保留日志可检索性。
+function createDevilRouletteResumeStore({ filePath, logTag = 'DevilRouletteResume', now = Date.now } = {}) {
     let snapshots = {}; // gameId -> snapshot object
     let writeQueue = Promise.resolve();
 
@@ -23,7 +25,7 @@ function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
             await fs.mkdir(path.dirname(filePath), { recursive: true });
             return true;
         } catch (error) {
-            logFailure('creating resume directory', error);
+            logFailure(logTag, 'creating resume directory', error);
             return false;
         }
     }
@@ -35,22 +37,22 @@ function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
         try {
             await fs.writeFile(temporaryPath, payload, 'utf8');
         } catch (error) {
-            logFailure('writing temporary resume file', error);
+            logFailure(logTag, 'writing temporary resume file', error);
             try {
                 await fs.unlink(temporaryPath);
             } catch (cleanupError) {
-                if (cleanupError.code !== 'ENOENT') logFailure('cleaning up temporary resume file', cleanupError);
+                if (cleanupError.code !== 'ENOENT') logFailure(logTag, 'cleaning up temporary resume file', cleanupError);
             }
             return;
         }
         try {
             await fs.rename(temporaryPath, filePath);
         } catch (error) {
-            logFailure('renaming temporary resume file', error);
+            logFailure(logTag, 'renaming temporary resume file', error);
             try {
                 await fs.unlink(temporaryPath);
             } catch (cleanupError) {
-                if (cleanupError.code !== 'ENOENT') logFailure('cleaning up temporary resume file', cleanupError);
+                if (cleanupError.code !== 'ENOENT') logFailure(logTag, 'cleaning up temporary resume file', cleanupError);
             }
         }
     }
@@ -70,7 +72,7 @@ function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
             await fs.rename(filePath, backupPath);
             return true;
         } catch (error) {
-            logFailure('backing up malformed resume file', error);
+            logFailure(logTag, 'backing up malformed resume file', error);
             return false;
         }
     }
@@ -79,7 +81,7 @@ function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
         try {
             await writeQueue;
         } catch (error) {
-            logFailure('waiting before resume load', error);
+            logFailure(logTag, 'waiting before resume load', error);
         }
         if (!await ensureDirectory()) {
             snapshots = {};
@@ -89,7 +91,7 @@ function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
         try {
             serialized = await fs.readFile(filePath, 'utf8');
         } catch (error) {
-            if (error.code !== 'ENOENT') logFailure('reading resume file', error);
+            if (error.code !== 'ENOENT') logFailure(logTag, 'reading resume file', error);
         }
         if (serialized !== undefined) {
             try {
@@ -97,7 +99,7 @@ function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
                 if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Resume data must be a JSON object');
                 snapshots = value;
             } catch (error) {
-                logFailure('parsing resume file', error);
+                logFailure(logTag, 'parsing resume file', error);
                 await backupMalformedFile();
                 snapshots = {};
             }
@@ -126,7 +128,7 @@ function createDevilRouletteResumeStore({ filePath, now = Date.now } = {}) {
         try {
             await writeQueue;
         } catch (error) {
-            logFailure('flushing resume writes', error);
+            logFailure(logTag, 'flushing resume writes', error);
         }
     }
 
