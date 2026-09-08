@@ -249,10 +249,10 @@ async function handleRecruitAction(session, interaction, action) {
     const userName = interaction.member?.displayName || interaction.user.username;
 
     if (action === 'join') {
+        // 剥离 markdown 控制字符：名字会进公开面板的 code span 与标题，反引号/井号可伪造系统文案。
+        const safeName = String(userName || '').replace(/[`#*_|~><]/g, '');
         const r = await session.runGameAction(() => {
-            // 剥离 markdown 控制字符：名字会进公开面板的 code span 与标题，反引号/井号可伪造系统文案。
-        userName = String(userName || '').replace(/[`#*_|~><]/g, '');
-        const msg = game.join(userId, userName);
+            const msg = game.join(userId, safeName);
             store.save(game.guildId, game.serialize());
             return msg;
         });
