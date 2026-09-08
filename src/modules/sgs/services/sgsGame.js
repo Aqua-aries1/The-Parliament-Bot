@@ -43,6 +43,7 @@ class GameSession {
         this.lastLog = [];
         this.lockQueue = Promise.resolve();
         this.released = false;
+        this.renewedForToken = null; // 响应面板续期去重：每个结算窗口只续一次
     }
 
     async withLock(action) {
@@ -123,6 +124,17 @@ class GameSession {
         }
     }
 
+    // 动作后的统一持久化：终局清快照停表，否则存快照并重排计时。
+    persistAfterAction() {
+        if (this.game.finished) {
+            store.remove(this.game.guildId);
+            this.cancelTimer();
+        } else {
+            store.save(this.game.guildId, this.game.serialize());
+            this.armTimer();
+        }
+    }
+
     async _onTimeout(armedToken) {
         if (this.released || this.game.actionToken !== armedToken) return;
 
@@ -152,13 +164,7 @@ class GameSession {
                     const res = this.game.endTurn(cur.userId, armedToken);
                     this.recordEvents(res.events);
                 }
-                if (this.game.finished) {
-                    store.remove(this.game.guildId);
-                    this.cancelTimer();
-                } else {
-                    store.save(this.game.guildId, this.game.serialize());
-                    this.armTimer();
-                }
+                this.persistAfterAction();
             } catch (e) {
                 console.error('[SGS] Timeout action error:', e);
                 // 兜底：处理失败也要保住计时链与快照，否则 pending 无人接手会全桌软锁。
@@ -423,7 +429,7 @@ async function showRulesHelp(interaction) {
             text = (
                 '**🎴 卡牌与锦囊对抗**\n' +
                 '• **基本牌**：【杀】（出牌阶段限一次）、【闪】（回避攻击）、【桃】（回复体力或濒死救援）。\n' +
-                '• **普通锦囊**：过河拆桥（弃目标一张牌）、顺手牵羊（拿目标一张牌，限距离 1）、决斗（轮流出【杀】，先不出者受伤）、无中生有（自己摸 2 张）、桃园结义（全场回复 1 点）、五谷丰登（每人各选 1 张）、南蛮入侵（全场需出【杀】否则受伤）、万箭齐发（全场需出【闪】否则受伤）。\n' +
+                '• **普通锦囊**：过河拆桥（弃目标一张牌）、顺手牵羊（拿目标一张牌，限距离 1）、决斗（轮流出【杀】，先不出者受伤）、无中生有（自己摸 2 张）、桃园结义（全场回复 1 点）、五谷丰登（每名存活角色各摸 1 张）、南蛮入侵（全场需出【杀】否则受伤）、万箭齐发（全场需出【闪】否则受伤）。\n' +
                 '• **⚡ 无懈可击抢断窗**：普通锦囊打出后，全场进入 12 秒抢断倒计时，任何人持有无懈可击均可抢按抵消！\n' +
                 '• **延时锦囊**：乐不思蜀（跳过出牌）、兵粮寸断（跳过摸牌）、闪电（3点雷击伤害，自动移交下一个玩家判定）。'
             );
@@ -458,7 +464,7 @@ async function showRulesHelp(interaction) {
 // ------------------------------------------------ 对局主面板动作
 
 // 无懈可击抢断流：从「⚡ 抢出无懈」或「🛡 响应」入口均可进入。
-async function showNullifyFlow(session, interaction) {
+async function showNullifyFlow(session, interaction, token) {
     const game = session.game;
     const userId = interaction.user.id;
     const top = game.pendingTop;
@@ -504,10 +510,9 @@ async function showNullifyFlow(session, interaction) {
         const idx = Number(btnInter.customId.replace('sgs_do_nullify_', ''));
         await btnInter.deferUpdate();
         const r = await session.runGameAction(() => {
-            const res = game.resolvePending(userId, { type: 'nullify', card_index: idx });
+            const res = game.resolvePending(userId, { type: 'nullify', card_index: idx }, Number(token));
             session.recordEvents(res.events);
-            store.save(game.guildId, game.serialize());
-            session.armTimer();
+            session.persistAfterAction();
             return res;
         });
         await session.render();
@@ -573,7 +578,7 @@ async function handleMainAction(session, interaction, action, token) {
     }
 
     if (action === 'nullify') {
-        await showNullifyFlow(session, interaction);
+        await showNullifyFlow(session, interaction, token);
         return;
     }
 
@@ -585,7 +590,7 @@ async function handleMainAction(session, interaction, action, token) {
         }
         // 无懈抢断窗与「响应」共用同一入口（抢断窗对全桌开放）。
         if (top.kind === 'nullify') {
-            await showNullifyFlow(session, interaction);
+            await showNullifyFlow(session, interaction, token);
             return;
         }
         if (top.deciderId !== userId) {
@@ -593,7 +598,7 @@ async function handleMainAction(session, interaction, action, token) {
             await interaction.reply({ content: `现在轮到 ${who} 响应。`, ephemeral: true });
             return;
         }
-        await showRespondModal(session, interaction);
+        await showRespondModal(session, interaction, token);
         return;
     }
 
@@ -614,7 +619,7 @@ async function handleMainAction(session, interaction, action, token) {
             await interaction.reply({ content: '你受【乐不思蜀】影响，本回合不能出牌，请结束回合。', ephemeral: true });
             return;
         }
-        await showPlayFlowModal(session, interaction);
+        await showPlayFlowModal(session, interaction, token);
         return;
     }
 
@@ -636,7 +641,7 @@ async function handleMainAction(session, interaction, action, token) {
             await interaction.reply({ content: '你的武将没有主动技能。', ephemeral: true });
             return;
         }
-        await showSkillFlowModal(session, interaction, specs);
+        await showSkillFlowModal(session, interaction, specs, token);
         return;
     }
 
@@ -645,13 +650,7 @@ async function handleMainAction(session, interaction, action, token) {
         const r = await session.runGameAction(() => {
             const res = game.endTurn(userId, token);
             session.recordEvents(res.events);
-            if (game.finished) {
-                store.remove(game.guildId);
-                session.cancelTimer();
-            } else {
-                store.save(game.guildId, game.serialize());
-                session.armTimer();
-            }
+            session.persistAfterAction();
             return res;
         });
         await session.render();
@@ -664,7 +663,7 @@ async function handleMainAction(session, interaction, action, token) {
     }
 }
 
-async function showRespondModal(session, interaction) {
+async function showRespondModal(session, interaction, token) {
     const game = session.game;
     const userId = interaction.user.id;
     const info = game.pendingOptions(userId);
@@ -818,15 +817,9 @@ async function showRespondModal(session, interaction) {
         if (actionObj) {
             await cInter.deferUpdate();
             const r = await session.runGameAction(() => {
-                const res = game.resolvePending(userId, actionObj);
+                const res = game.resolvePending(userId, actionObj, Number(token));
                 session.recordEvents(res.events);
-                if (game.finished) {
-                    store.remove(game.guildId);
-                    session.cancelTimer();
-                } else {
-                    store.save(game.guildId, game.serialize());
-                    session.armTimer();
-                }
+                session.persistAfterAction();
                 return res;
             });
             await session.render();
@@ -841,7 +834,7 @@ async function showRespondModal(session, interaction) {
     });
 }
 
-async function showPlayFlowModal(session, interaction) {
+async function showPlayFlowModal(session, interaction, token) {
     const game = session.game;
     const userId = interaction.user.id;
     const player = game.player(userId);
@@ -933,10 +926,9 @@ async function showPlayFlowModal(session, interaction) {
                     const targetId = tInter.values[0];
                     await tInter.deferUpdate();
                     const r = await session.runGameAction(() => {
-                        const res = game.playCard(userId, null, targetId, null, { cardIndexes: cIdxs });
+                        const res = game.playCard(userId, null, targetId, Number(token), { cardIndexes: cIdxs });
                         session.recordEvents(res.events);
-                        store.save(game.guildId, game.serialize());
-                        session.armTimer();
+                        session.persistAfterAction();
                         return res;
                     });
                     await session.render();
@@ -961,10 +953,9 @@ async function showPlayFlowModal(session, interaction) {
                 // 直接使用（桃/无中生有/装备/AOE等）
                 await cInter.deferUpdate();
                 const r = await session.runGameAction(() => {
-                    const res = game.playCard(userId, cardIdx);
+                    const res = game.playCard(userId, cardIdx, null, Number(token));
                     session.recordEvents(res.events);
-                    store.save(game.guildId, game.serialize());
-                    session.armTimer();
+                    session.persistAfterAction();
                     return res;
                 });
                 await session.render();
@@ -1000,7 +991,7 @@ async function showPlayFlowModal(session, interaction) {
                     const tids = tInter.values;
                     await tInter.deferUpdate();
                     const r = await session.runGameAction(() => {
-                        const res = game.playCard(userId, cardIdx, tids.length === 1 ? tids[0] : null, null, {
+                        const res = game.playCard(userId, cardIdx, tids.length === 1 ? tids[0] : null, Number(token), {
                             targetIds: tids.length > 1 ? tids : null,
                         });
                         session.recordEvents(res.events);
@@ -1024,7 +1015,7 @@ async function showPlayFlowModal(session, interaction) {
     });
 }
 
-async function showSkillFlowModal(session, interaction, specs) {
+async function showSkillFlowModal(session, interaction, specs, token) {
     const game = session.game;
     const userId = interaction.user.id;
     const player = game.player(userId);
@@ -1061,10 +1052,9 @@ async function showSkillFlowModal(session, interaction, specs) {
             // 苦肉等直接发动
             await sInter.deferUpdate();
             const r = await session.runGameAction(() => {
-                const res = game.activeSkill(userId, skillId);
+                const res = game.activeSkill(userId, skillId, null, null, Number(token));
                 session.recordEvents(res.events);
-                store.save(game.guildId, game.serialize());
-                session.armTimer();
+                session.persistAfterAction();
                 return res;
             });
             await session.render();
@@ -1102,10 +1092,9 @@ async function showSkillFlowModal(session, interaction, specs) {
                 if (!spec.targets) {
                     await cInter.deferUpdate();
                     const r = await session.runGameAction(() => {
-                        const res = game.activeSkill(userId, skillId, cIdxs);
+                        const res = game.activeSkill(userId, skillId, cIdxs, null, Number(token));
                         session.recordEvents(res.events);
-                        store.save(game.guildId, game.serialize());
-                        session.armTimer();
+                        session.persistAfterAction();
                         return res;
                     });
                     await session.render();
@@ -1141,10 +1130,9 @@ async function showSkillFlowModal(session, interaction, specs) {
                     const tids = tInter.values;
                     await tInter.deferUpdate();
                     const r = await session.runGameAction(() => {
-                        const res = game.activeSkill(userId, skillId, cIdxs, tids);
+                        const res = game.activeSkill(userId, skillId, cIdxs, tids, Number(token));
                         session.recordEvents(res.events);
-                        store.save(game.guildId, game.serialize());
-                        session.armTimer();
+                        session.persistAfterAction();
                         return res;
                     });
                     await session.render();
@@ -1182,10 +1170,9 @@ async function showSkillFlowModal(session, interaction, specs) {
                 const tids = tInter.values;
                 await tInter.deferUpdate();
                 const r = await session.runGameAction(() => {
-                    const res = game.activeSkill(userId, skillId, [], tids);
+                    const res = game.activeSkill(userId, skillId, [], tids, Number(token));
                     session.recordEvents(res.events);
-                    store.save(game.guildId, game.serialize());
-                    session.armTimer();
+                    session.persistAfterAction();
                     return res;
                 });
                 await session.render();

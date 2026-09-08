@@ -1931,8 +1931,12 @@ class Game {
                     this.discard.push(delayed);
                     this.dealDamage(player, 3, null, '闪电', events);
                 } else {
-                    const nxt = this._nextLiving(player);
-                    if (nxt && !nxt.delayed.some(d => d.name === '闪电')) {
+                    // 官方惯例：下家已有闪电则继续传给再下家，全场都有才弃置。
+                    let nxt = this._nextLiving(player);
+                    while (nxt && nxt.delayed.some(d => d.name === '闪电')) {
+                        nxt = this._nextLiving(nxt);
+                    }
+                    if (nxt && nxt !== player) {
                         nxt.delayed.push(delayed);
                         events.push({ type: 'note', text: `【闪电】移至 ${nxt.name} 的判定区。` });
                     } else {
