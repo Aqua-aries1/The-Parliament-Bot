@@ -620,9 +620,11 @@ class LiarsBarGame {
             if (result.eliminatedId != null) {
                 // 惩罚决定人 = 对决的另一方（质疑者/被开牌人中不是输家的那个）；
                 // 终局性出局（如 2 人局）也要先惩罚再结算，决定人 = 最终胜者。
-                const deciderId = result.gameEnded
+                let deciderId = result.gameEnded
                     ? result.winnerId
                     : (result.actorId === result.eliminatedId ? result.revealedBy : result.actorId);
+                // 决定人若已出局（如被开的是认输者留下的声明），交给座位顺位兜底。
+                if (deciderId != null && !this.state.alive.has(deciderId)) deciderId = null;
                 await this.beginEliminationPenaltyLocked(result.eliminatedId, 'normal', deciderId);
             } else {
                 await this.sendBroadcastLocked({ title: '🎴 新一轮' });
@@ -695,7 +697,9 @@ class LiarsBarGame {
             await sendComponentError(interaction, rejection || '这局还没有可刷新的活动面板。');
             return;
         }
-        const ok = await this.renderLocked();
+        // 刷新只重发面板，不重排回合计时器：否则任何参与者都能靠连点刷新
+        // 无限续 62 秒回合，让超时自动出牌永远不触发（无限拖延漏洞）。
+        const ok = await this.renderLocked({ armTimer: false });
         await sendEphemeral(interaction, {
             content: ok ? '🔄 已刷新当前面板。' : '🔄 面板刷新失败，请稍后再试。',
         });
@@ -1518,13 +1522,12 @@ class LiarsBarGame {
         const lastLine = state.lastPlay != null
             ? `上一手：**${this.plainName(state.lastPlay.playerId)}** 盖了 **${state.lastPlay.count}** 张`
             : '你是本轮第一手（不可被质疑）';
-        // 决策参考：牌堆组成是公开信息——本轮在场牌中真牌（桌面点数+小丑）占比可算。
+        // 决策参考只给真正公开的信息：全场真牌固定 8 张（K/Q/A 各 6 + 2 小丑）。
+        // 不能聚合"全场手牌+盖牌中的真牌数"——2/3 人局该值随发牌波动且不可推导，
+        // 会把推理题变成读数题（极端牌型下可推出必中质疑）。
         const rank = state.tableRank;
-        const allCards = [];
-        for (const pid of state.players) allCards.push(...state.handCards(pid));
-        if (state.lastPlay) allCards.push(...state.lastPlay.cards);
-        const honest = allCards.filter(c => c === rank || c === 'JOKER').length;
-        const refLine = `📊 参考：本轮在场 ${allCards.length} 张牌，真牌（${rank} 点+小丑）约 **${honest} 张**，你手里 ${state.handCards(userId).filter(c => c === rank || c === 'JOKER').length} 张`;
+        const ownTrue = state.handCards(userId).filter(c => c === rank || c === 'JOKER').length;
+        const refLine = `📊 参考：全场真牌（${rank} 点+小丑）共 **8 张**，你手里 ${ownTrue} 张`;
         const odds = state.lethalOdds(userId);
         const denom = Math.max(1, Math.round(1 / odds));
         const oddsText = odds >= 1 ? '必死' : `1/${denom}`;
@@ -1564,8 +1567,8 @@ class LiarsBarGame {
                 + '每轮输家（被抓的骗子 / 质疑失败者）翻自己专属左轮牌堆顶牌（1 致命 + 3 空包共 4 张，'
                 + '统一翻 1 张、翻掉不回填，越罚越危险——首翻 1/4，第 4 发必死）：\n'
                 + '　• 空包——侥幸存活，继续下一轮；\n'
-                + '　• 致命——出局，并由抓到的人选择 🔇 禁言 5 分 / ✏️ 改名 10 分'
-                + `（${PENALTY_SETTLEMENT_SECONDS} 秒不选自动禁言 5 分）。\n\n`
+                + `　• 致命——出局，并由抓到的人选择 🔇 禁言 ${PENALTY_MUTE_MINUTES} 分 / ✏️ 改名 ${PENALTY_RENAME_MINUTES} 分`
+                + `（${PENALTY_SETTLEMENT_SECONDS} 秒不选自动禁言 ${PENALTY_AUTO_MUTE_MINUTES} 分）。\n\n`
                 + '**🔁 流转**：新一轮先手 = 上一轮的输家；桌面点数牌堆翻尽重洗。\n\n'
                 + '**🏆 胜利与惩罚总则**：**每个出局者都当场受罚一次**（质疑致命 / 认输 / 失格，'
                 + '认输与失格减轻为 3 / 6 分）；活到最后的**唯一幸存者是胜者，不受任何惩罚**。\n\n'
@@ -2001,11 +2004,15 @@ async function handleLiarsBarMemberInvalidated(game, userId) {
         }
     });
     if (!outcome) return false;
+    // 招募期失格/散桌没有对局状态可惩罚：刷新面板收场即可。
+    // （原路径无条件走惩罚流，state 为 null 时 TypeError 会被兜底成整桌强制清场。）
+    if (outcome !== 'forfeit_penalty') {
+        await game.refreshMainPanelLocked();
+        return true;
+    }
     await game.sendBroadcastLocked({ title: '🏳️ 玩家失格' });
-    await game.beginEliminationPenaltyLocked(
-        game.state.players.find(p => !game.state.alive.has(p)) || userId,
-        'surrender'
-    );
+    // 受罚人就是本次失格者本人；按"第一个死者"找会罚到早已受罚的旧出局者。
+    await game.beginEliminationPenaltyLocked(userId, 'surrender');
     return true;
 }
 

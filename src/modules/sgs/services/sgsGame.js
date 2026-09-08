@@ -142,6 +142,11 @@ class GameSession {
                     this.recordEvents(res.events);
                 } else {
                     const cur = this.game.current;
+                    if (!cur.autoPlay) {
+                        // 玩家已手动接管（解除托管未换 token 的窗口期），不要抢结束回合。
+                        this.armTimer();
+                        return;
+                    }
                     cur.autoPlay = true;
                     this.lastLog.push(`⏱ **${cur.name}** 出牌超时，已自动进入托管模式并结束回合。`);
                     const res = this.game.endTurn(cur.userId, armedToken);
@@ -156,6 +161,11 @@ class GameSession {
                 }
             } catch (e) {
                 console.error('[SGS] Timeout action error:', e);
+                // 兜底：处理失败也要保住计时链与快照，否则 pending 无人接手会全桌软锁。
+                if (!this.game.finished) {
+                    store.save(this.game.guildId, this.game.serialize());
+                    this.armTimer();
+                }
             }
         });
 
@@ -516,6 +526,9 @@ async function handleMainAction(session, interaction, action, token) {
         await session.withLock(async () => {
             player.autoPlay = false;
             store.save(game.guildId, game.serialize());
+            // 解除托管必须按非托管时限重排死线：托管期武装的 8 秒旧定时器
+            // 不重排的话仍会到期，强制结束刚接管玩家的回合。
+            session.armTimer();
         });
     }
 
@@ -527,6 +540,7 @@ async function handleMainAction(session, interaction, action, token) {
         await session.withLock(async () => {
             player.autoPlay = false;
             store.save(game.guildId, game.serialize());
+            session.armTimer(); // 同上：取消托管要重排死线
         });
         await session.render();
         await interaction.reply({ content: '✓ 已取消托管状态，恢复手动操控！', ephemeral: true });
@@ -993,6 +1007,11 @@ async function showSkillFlowModal(session, interaction, specs) {
     collector.on('collect', async (sInter) => {
         const skillId = sInter.values[0];
         const spec = ACTIVE_SKILLS[skillId];
+        if (!spec) {
+            // 同一 reply 上还挂着选牌/选目标 collector，它们的值不是技能名，会进这里。
+            await sInter.deferUpdate().catch(() => {});
+            return;
+        }
 
         if (!spec.needsCard && !spec.targets) {
             // 苦肉等直接发动

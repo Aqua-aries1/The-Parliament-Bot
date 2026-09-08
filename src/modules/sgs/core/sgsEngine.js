@@ -291,7 +291,7 @@ const ACTIVE_SKILLS = {
     '国色': { skillId: '国色', general: '大乔', needsCard: true, cardCount: 1, cardFilter: c => c.suit === Suit.DIAMOND, targets: 1, description: '方块手牌当【乐不思蜀】使用' },
     '青囊': { skillId: '青囊', general: '华佗', needsCard: true, cardCount: 1, targets: 1, targetFilter: 'wounded', description: '弃一张手牌，令一名受伤角色回复 1 点体力' },
     '苦肉': { skillId: '苦肉', general: '黄盖', needsCard: false, cardCount: 0, targets: 0, description: '失去 1 点体力，摸两张牌' },
-    '离间': { skillId: '离间', general: '貂蝉', needsCard: true, cardCount: 1, targets: 2, description: '弃一张手牌，令两名角色进行决斗' },
+    '离间': { skillId: '离间', general: '貂蝉', needsCard: true, cardCount: 1, targets: 2, targetFilter: 'other_alive', description: '弃一张手牌，令两名角色进行决斗' },
     '乱击': { skillId: '乱击', general: '袁绍', needsCard: true, cardCount: 2, sameSuit: true, targets: 0, description: '两张同花色手牌当【万箭齐发】使用' },
 };
 
@@ -667,6 +667,7 @@ const ACTIVE_EFFECTS = {
         if (target.delayed.some(d => d.name === '乐不思蜀')) throw new GameError('目标已有【乐不思蜀】。');
         const converted = game.convertCard(cards[0], '乐不思蜀', CardType.DELAYED);
         game.removeHandCard(player, cards[0]);
+        game.discard.push(cards[0]); // 转化生成的是新牌对象，原牌必须入弃牌堆（否则全场总牌数凭空减员）
         target.delayed.push(converted);
         player.skillUsed = true;
         events.push({ type: 'skill', player_id: player.userId, skill_name: '国色', note: `将 ${cards[0].short} 当【乐不思蜀】置于 ${target.name} 的判定区` });
@@ -1328,18 +1329,20 @@ class Game {
     _resolveBladePursue(top, action, events) {
         const attacker = this.player(top.deciderId);
         const target = this.player(top.data.target_id);
-        this.pendingStack = this.pendingStack.filter(p => p !== top);
 
         if (action.type === 'slash') {
             const card = this._handCard(attacker, action.card_index);
             const options = this.responseOptions(attacker, '杀');
             const found = options.find(o => o[0] === card);
             if (!found) throw new GameError('这张牌不能当作【杀】打出。');
+            // 先校验后动栈：校验失败时保留追击窗口（原先删栈后校验，失败会让窗口蒸发+旧定时器误判超时）。
+            this.pendingStack = this.pendingStack.filter(p => p !== top);
             this.removeHandCard(attacker, card);
             this.discard.push(card);
             events.push({ type: 'note', text: `${attacker.name} 发动【青龙偃月刀】追击，打出 ${card.short}！` });
             this._launchSingleAttack(attacker, card, target, events, '（青龙偃月刀追击）');
         } else if (action.type === 'pass') {
+            this.pendingStack = this.pendingStack.filter(p => p !== top);
             events.push({ type: 'note', text: `${attacker.name} 放弃青龙偃月刀追击。` });
         } else {
             throw new GameError('未知的追击动作。');
@@ -1349,16 +1352,18 @@ class Game {
     _resolveBowMount(top, action, events) {
         const attacker = this.player(top.deciderId);
         const target = this.player(top.data.target_id);
-        this.pendingStack = this.pendingStack.filter(p => p !== top);
 
         if (action.type === 'dismount') {
             const slot = action.slot;
             if (!target.equipment[slot]) throw new GameError('目标没有该坐骑。');
+            // 先校验后动栈（同青龙刀追击）。
+            this.pendingStack = this.pendingStack.filter(p => p !== top);
             const mount = target.equipment[slot];
             delete target.equipment[slot];
             this.discard.push(mount);
             events.push({ type: 'note', text: `${attacker.name} 发动【麒麟弓】，射落了 ${target.name} 的坐骑 ${mount.short}！` });
         } else if (action.type === 'pass') {
+            this.pendingStack = this.pendingStack.filter(p => p !== top);
             events.push({ type: 'note', text: `${attacker.name} 未发动麒麟弓拆马。` });
         } else {
             throw new GameError('未知的拆马动作。');

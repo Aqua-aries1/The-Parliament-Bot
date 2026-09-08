@@ -510,6 +510,8 @@ class LiarsDiceGame {
                     } else {
                         deciderId = result.actorId === pid ? result.calledBid.playerId : result.actorId;
                     }
+                    // 决定人若已出局（如开的是离席者留下的叫点），交给座位顺位兜底。
+                    if (deciderId != null && !this.state.alive.has(deciderId)) deciderId = null;
                     return { loserId: pid, deciderId };
                 });
                 const first = this.penaltyQueue.shift();
@@ -551,8 +553,9 @@ class LiarsDiceGame {
         const state = this.state;
         if (!state) return;
         // 惩罚队列还有下一个出局者：继续结算（多人同时归零的场景）。
-        if (Array.isArray(this.penaltyQueue) && this.penaltyQueue.length > 0
-            && state.phase !== 'ended') {
+        // 与 phase 解耦：spot_on 命中可让终局同批出局者排队——必须全部罚完再终局，
+        // 否则最后一批出局者静默逃罚。
+        if (Array.isArray(this.penaltyQueue) && this.penaltyQueue.length > 0) {
             const next = this.penaltyQueue.shift();
             if (this.pendingAnnouncement) {
                 this.lastEvent = this.pendingAnnouncement;
@@ -1109,7 +1112,8 @@ class LiarsDiceGame {
             await sendComponentError(interaction, rejection || '这局还没有可刷新的活动面板。');
             return;
         }
-        const ok = await this.renderLocked();
+        // 刷新只重发面板，不重排回合计时器（防连点刷新无限拖延，同酒馆）。
+        const ok = await this.renderLocked({ armTimer: false });
         await sendEphemeral(interaction, {
             content: ok ? '🔄 已刷新当前面板。' : '🔄 面板刷新失败，请稍后再试。',
         });
@@ -1376,7 +1380,11 @@ class LiarsDiceGame {
     // 每次选择后原地更新已选状态。
     bidViewRows(state, userId) {
         const rows = [];
-        const pending = this.pendingBid;
+        // 只认当前回合、本人登记的待确认叫点：跨回合残留/他人登记一律视为空，
+        // 否则旧面板的选择会被渲染成"当前可确认"，误导性落子。
+        const pending = this.pendingBid?.turnToken === state.turnToken && this.pendingBid?.userId === userId
+            ? this.pendingBid
+            : null;
         const prev = state.currentBid;
         const maxCount = state.totalDice();
 
@@ -1507,7 +1515,8 @@ class LiarsDiceGame {
         const state = this.state;
         if (!pending || pending.userId !== userId || pending.face == null
             || this.status !== 'playing' || !state
-            || state.turnToken !== expectedToken) {
+            || state.turnToken !== expectedToken
+            || pending.turnToken !== expectedToken) {
             await deferComponent(interaction, { ephemeral: true });
             await sendComponentError(interaction, '叫点未完成：请先选数量和点数。');
             return;
@@ -2004,15 +2013,15 @@ async function handleLiarsDiceMemberInvalidated(game, userId) {
         }
     });
     if (!outcome) return false;
-    if (outcome === 'recruit_left') {
+    // 招募期失格/散桌没有对局状态可惩罚：刷新面板收场即可。
+    // （state 为 null 时走惩罚流会在 state.players 处 TypeError。）
+    if (outcome !== 'forfeit_penalty') {
         await game.refreshMainPanelLocked();
         return true;
     }
     await game.sendBroadcastLocked({ title: '🏳️ 玩家失格' });
-    await game.beginEliminationPenaltyLocked(
-        game.state.players.find(p => !game.state.alive.has(p)) || userId,
-        'surrender'
-    );
+    // 受罚人就是本次失格者本人；按"第一个死者"找会罚到早已受罚的旧出局者。
+    await game.beginEliminationPenaltyLocked(userId, 'surrender');
     return true;
 }
 

@@ -249,7 +249,9 @@ class LiarsDiceState {
         const { total, revealed } = this._countDice(called);
         // 数量够 → 叫点成立 → 开牌者输；不够 → 叫点者输。
         const bidHolds = total >= called.count;
-        const loserId = bidHolds ? actorId : called.playerId;
+        let loserId = bidHolds ? actorId : called.playerId;
+        // 叫点人已出局（如认输离席后留下的叫点被开）：声明随人作废，无人受罚。
+        if (loserId !== actorId && !this.alive.has(loserId)) loserId = null;
 
         const result = defaultActionResult('open', actorId);
         result.calledBid = { ...called };
@@ -258,7 +260,7 @@ class LiarsDiceState {
         result.bidHolds = bidHolds;
         result.loserId = loserId;
         const out = [];
-        if (this._loseDie(loserId)) out.push(loserId);
+        if (loserId != null && this._loseDie(loserId)) out.push(loserId);
         result.eliminatedIds = out;
         result.eliminatedId = out[0] ?? null;
         if (out.length && this._checkGameEnd()) {
@@ -266,8 +268,8 @@ class LiarsDiceState {
             result.winnerId = this.winnerId;
             return result;
         }
-        // 新一轮：输家先手（出局则顺位）。
-        this._startRound(loserId);
+        // 新一轮：输家先手（出局则顺位）；声明作废时由开牌者开新轮。
+        this._startRound(loserId ?? actorId);
         result.newRound = true;
         result.firstPlayerId = this.turnPlayerId;
         return result;

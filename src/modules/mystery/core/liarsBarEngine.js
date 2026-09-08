@@ -359,6 +359,10 @@ class LiarsBarState {
         result.eliminatedId = actorId;
         this.alive.delete(actorId);
         this.hands[actorId] = [];
+        // 认输者若持本轮最后声明，声明随人作废：防止死后被"开尸"二次惩罚。
+        if (this.lastPlay && this.lastPlay.playerId === actorId) {
+            this.lastPlay = null;
+        }
         if (this.alive.size <= 1) {
             this.phase = 'ended';
             this.winnerId = [...this.alive][0] || null;
