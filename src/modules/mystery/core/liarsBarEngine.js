@@ -356,7 +356,7 @@ class LiarsBarState {
     }
 
     _challenge(actorId) {
-        assert(this.canChallenge(actorId), '现在不能质疑——不能质疑自己刚盖的那一手，第一手也无人可质疑。');
+        assert(this.canChallenge(actorId), '现在不能质疑——不能质疑自己刚盖的那一手，桌上还没有牌也无从质疑。');
         const accused = this.lastPlay.playerId;
         const cards = this.lastPlay.cards;
         // 吹牛判定：非（桌面点数或小丑）的牌 = 假牌；一手里第 2 张及以后的小丑

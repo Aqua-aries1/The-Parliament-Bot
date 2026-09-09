@@ -1436,7 +1436,7 @@ class LiarsBarGame {
         if (state.lastPlay != null) {
             parts.push(`**${this.shortName(state.lastPlay.playerId)}** 盖了 **${state.lastPlay.count}** 张`);
         } else {
-            parts.push('第一手出牌中（第一手不可质疑）');
+            parts.push('本轮第一手出牌中（桌面无牌，暂无质疑对象）');
         }
         parts.push('', '');
         embed.setDescription(parts.join('\n'));
@@ -1489,7 +1489,7 @@ class LiarsBarGame {
                 .setCustomId(`mystery_liars_bar_challenge:${this.id}:${state.turnToken}`)
                 .setLabel(state.lastPlay ? `🤥 质疑 @${this.plainName(state.lastPlay.playerId)}！` : '🤥 质疑上一手！')
                 .setStyle(ButtonStyle.Danger);
-            if (!anyChallenger) challengeBtn.setDisabled(true); // 第一手：无人可质疑
+            if (!anyChallenger) challengeBtn.setDisabled(true); // 桌面无牌：无从质疑（第一手盖完后下一位即可拍桌）
             row0.addComponents(challengeBtn);
             const lastRow = new ActionRowBuilder();
             lastRow.addComponents(
@@ -1598,7 +1598,7 @@ class LiarsBarGame {
         const alreadyPlayed = state.playedThisRound.has(userId);
         const lastLine = state.lastPlay != null
             ? `上一手：**${this.plainName(state.lastPlay.playerId)}** 盖了 **${state.lastPlay.count}** 张`
-            : '你是本轮第一手（不可被质疑）';
+            : '你是本轮第一手（桌上还没有牌可质疑）';
         // 决策参考只给真正公开的信息：全场真牌固定 8 张（K/Q/A 各 6 + 2 小丑）。
         // 不能聚合"全场手牌+盖牌中的真牌数"——2/3 人局该值随发牌波动且不可推导，
         // 会把推理题变成读数题（极端牌型下可推出必中质疑）。
@@ -1639,7 +1639,7 @@ class LiarsBarGame {
                 + '**🤥 质疑对全桌开放**：任何其他玩家（不限下家）都可**抢先拍桌**——先到先得。\n'
                 + '　• 非桌面点数的牌 = 假牌；小丑万能但**每手只认第一张**（第二张起算假牌）；\n'
                 + '　• 被抓的骗子翻 1 张左轮；质疑失败首次免翻只记警告，再次失手才翻；\n'
-                + '　• 第一手不可质疑；全员盖完/无牌可盖时强制开牌。\n\n'
+                + '　• 质疑只针对上一手——本轮还没有人盖牌时无从质疑；全员盖完/无牌可盖时由轮到者强制开上一手。\n\n'
                 + '**🔫 出局惩罚（左轮牌堆）**\n'
                 + '左轮翻牌者（被抓的骗子 / 失手两次的质疑者）翻自己专属左轮牌堆顶牌（1 致命 + 1 空包共 2 张，'
                 + '翻掉不回填）：首翻对半开——空包侥幸后剩余必为致命，**下次赌输必死**，每人整局最多侥幸 1 次：\n'

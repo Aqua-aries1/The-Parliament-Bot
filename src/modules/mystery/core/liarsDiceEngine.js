@@ -213,7 +213,7 @@ class LiarsDiceState {
         return this.isLegalBid(count, face);
     }
 
-    // 开牌：轮到者即可质疑上一手（第一手无人可质疑）。
+    // 开牌：轮到者即可质疑上一手（还没有叫点时无从开牌）。
     canOpen(userId) {
         if (this.phase !== 'playing' || userId !== this.turnPlayerId) return false;
         return this.currentBid != null;
