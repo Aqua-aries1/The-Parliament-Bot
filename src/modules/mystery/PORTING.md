@@ -55,3 +55,25 @@
   4 张牌堆原样续用，不迁移。
 - 交互层新增宿主无关能力：翻左轮两拍动画、称号即时播报/颁奖礼、明牌面板行、
   `pendingPenalties`（酒馆）/`penaltyQueue`（骰子）竞态惩罚队列——全部在 services 层，无宿主依赖。
+
+## 睦子米（MutsumiBot）宿主落地纪要（2026-09-09）
+
+- 运行形态：discord.py 2.x 单 cog `src/mutsumi_bot/cogs/liars_games.py`（双引擎+会话+View 一体，~4400 行）；
+  命令为顶级 `/骗子酒馆` `/骗子骰子`（无神秘指令前缀，睦子米宿主惯例）；接线 = `bot.py` setup_hook 扩展列表。
+- 5 根线映射：命令注册→`app_commands`；交互转发→View 对象持会话引用+闭包回调（无 customId 前缀，
+  turnToken 校验保留在引擎 `apply` 内）；启动恢复→cog `on_ready` 快照恢复；成员失效→`on_member_remove`
+  /`on_member_update` 监听；优雅关停→`cog_unload`（关会话+末次落盘）。
+- 新增宿主能力（按本文档纪律登记）：
+  - `LiarsGameRegistry`：酒馆+骰子跨游戏玩家/频道互斥锁（prbot 侧等价物由 gameManager 隐式承担）；
+  - 快照统一为单文件 `DATA_DIR/liars_games_snapshot.json`（双 kind 共用一个 store，原子写 + 6h 过期丢弃，
+    是「resume store 工厂化」理念在 Python 侧的进一步收敛）；
+  - 改名锁为进程内 `RenameLockStore`：未到期锁随快照续命，`on_member_update` 强制改回 + 30s 到期恢复循环；
+    审计日志理由按 kind 挂在锁上（`rename_reason`），持久化字段必须含它。
+- 惩罚常量与 prbot 源一致（正常 4/8、认输/失格 3/6、自动禁言 4 分、结算窗 60s）；文案全部小睦人格特化。
+- **键类型坑（JS→Python 移植通用）**：Python 玩家 id 是 int，快照经 JSON 往返后 dict 键腐蚀为 str——
+  引擎 `from_dict` 必须经 `_int_keyed(data, players)` 归一化，且测试要走真实 `json.dumps/loads`
+  （内存 roundtrip 测不出）。JS 侧 id 天然是字符串，无此问题。
+- 规则文案修正双侧同步（「第一手不可质疑」→「桌面无牌无从质疑」，行为零改动）：
+  prbot `5a4ddf6` / 睦子米 `e82e655e`。
+- 真机冒烟门（本文档 checklist 第 6 步）：睦子米生产已部署 healthy + slash 已同步；
+  起一局/重启续传/触发惩罚流三步仍待群内实测。
