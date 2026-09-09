@@ -8,7 +8,8 @@
  *   - 轮到者盖着打出 1-3 张牌（声称全是桌面点数，可以撒谎），
  *     或质疑上一手「骗子！」——所出牌中只要有一张非（桌面点数或小丑）即吹牛成立；
  *   - 每轮输家（被抓的骗子 / 质疑失败者）翻自己专属左轮牌堆顶牌
- *     （1 致命 + 3 空包共 4 张，统一翻 1 张、翻掉不回填）：空包存活，致命出局；
+ *     （1 致命 + 1 空包共 2 张，翻掉不回填）：首翻 50% 存亡——空包侥幸后
+ *     剩余必为致命，下次赌输必死，每人整局最多侥幸 1 次；
  *   - 空手玩家跳过；只剩一人有手牌时该玩家必须质疑；
  *   - 新一轮先手 = 上一轮输家的下家（座位顺位存活者）；
  *   - 仅剩 1 人存活即获胜。
@@ -43,8 +44,50 @@ function buildLiarDeck() {
 }
 
 function buildRevolverDeck() {
-    return [true, false, false, false]; // 1 致命 + 3 空包（共 4，构造时洗牌）
+    return [true, false]; // 1 致命 + 1 空包（共 2，构造时洗牌）：首翻对半，空包后下次必死
 }
+
+// 单局称号（毒舌整活型）：纯派生规则——从本局 stats/状态推导，零持久化。
+// check(st, state) 返回 true 即达成；name/quip 由交互层原样渲染。
+const TITLE_RULES = [
+    {
+        key: 'yingdi', name: '🎬 影帝',
+        // 「每轮一手 + 强制质疑」结构下连骗计数最多到 2，故按总量口径：
+        // 整局撒谎 ≥3 手且从未被拆穿（每轮骗一手、永远不当最后手即可达成）。
+        check: st => (st.bluffs || 0) >= 3 && (st.caught || 0) === 0,
+        quip: '撒谎一整晚，愣是没被抓过一次——影帝级表演。',
+    },
+    {
+        key: 'shenqiangshou', name: '🎯 神枪手',
+        check: st => (st.challengeWins || 0) >= 2,
+        quip: '指哪打哪，骗子见了他连夜改行。',
+    },
+    {
+        key: 'dugou', name: '🐶 赌狗',
+        check: st => st.firstAction === 'challenge',
+        quip: '牌还没焐热就拍桌，赌性刻进 DNA。',
+    },
+    {
+        key: 'huobazi', name: '🎪 活靶子',
+        check: st => (st.caught || 0) >= 2,
+        quip: '撒谎水平约等于裸奔。',
+    },
+    {
+        key: 'feiqiu', name: '💀 非酋',
+        check: st => (st.spins || 0) >= 1 && (st.spinsSurvived || 0) === 0,
+        quip: '第一发就正中眉心，命里无左轮。',
+    },
+    {
+        key: 'ouhuang', name: '🍀 欧皇',
+        check: st => (st.spinsSurvived || 0) >= 1,
+        quip: '对半开的死亡概率都赌赢了，建议顺手买张彩票。',
+    },
+    {
+        key: 'guixianren', name: '🐢 龟仙人',
+        check: st => (st.plays || 0) >= 5 && (st.bluffs || 0) === 0 && (st.caught || 0) === 0,
+        quip: '一张假牌没出过，赌桌上弥漫着一股正直的味道。',
+    },
+];
 
 class InvalidAction extends Error {
     constructor(message) {
@@ -104,6 +147,9 @@ class LiarsBarState {
         this.revolverDecks = {}; // playerId -> 布尔数组（true=致命），游标即数组长度递减
         this.failedChallenges = {}; // playerId -> 质疑失手次数（两振制：首次失手免翻左轮）
         this.roundPlays = [];       // 本轮声明链：[{ playerId, count }]，复盘面板与"谁说了什么"可读化
+        this.revealedPool = [];     // 整局累计明牌：每次质疑开牌翻出的牌（公开推理素材）
+        this.announcedTitles = {};  // playerId -> 已达成称号 key 列表（防重复播报）
+        this.legacyTitles = false;  // 旧格式快照恢复的局置真：称号系统整局静默
         this.stats = {};            // playerId -> 本局统计（复盘用，不入任何持久库）
         this.alive = new Set(unique);
         this.tableDeck = [];     // 桌面牌堆（剩余可翻的点数）
@@ -271,6 +317,7 @@ class LiarsBarState {
             // 抢质疑：不要求是当前行动者（任意存活者可拍桌），但 token 必须是当前回合
             // （旧面板按钮随回合翻篇作废，防跨回合拍桌）。
             const result = this._challenge(actorId);
+            this._collectTitles(result);
             this.turnToken += 1;
             return result;
         }
@@ -280,6 +327,7 @@ class LiarsBarState {
         let result;
         if (action === 'play_cards') result = this._playCards(actorId, cardIndexes);
         else throw new InvalidAction('未知操作。');
+        this._collectTitles(result);
         this.turnToken += 1;
         return result;
     }
@@ -297,6 +345,7 @@ class LiarsBarState {
         this.playedThisRound.add(actorId);
         this.roundPlays.push({ playerId: actorId, count: cards.length });
         const st = this._stat(actorId);
+        if (st.firstAction == null) st.firstAction = 'play';
         st.plays += 1;
         st.cards += cards.length;
         if (cards.some(c => c !== this.tableRank && c !== JOKER)) st.bluffs += 1;
@@ -323,6 +372,7 @@ class LiarsBarState {
         const loserId = liar ? accused : actorId;
 
         const stA = this._stat(actorId);
+        if (stA.firstAction == null) stA.firstAction = 'challenge';
         stA.challenges += 1;
         if (liar) {
             stA.challengeWins += 1;
@@ -332,6 +382,7 @@ class LiarsBarState {
         const result = defaultActionResult('challenge', actorId);
         result.revealedCards = cards;
         result.revealedBy = accused;
+        this.revealedPool.push(...cards); // 开牌即公示，进入整局明牌池（计数推理素材）
         result.liar = liar;
         result.challengeTableRank = this.tableRank; // 新一轮会重置，先留档给交互层播报
         result.loserId = loserId;
@@ -348,8 +399,8 @@ class LiarsBarState {
         if (pardon) {
             result.revolverFlips = [];
         } else {
-            // 左轮翻牌：顶牌 = deck[pointer]，翻后指针后移（翻尽必死——第 4 发必致命）。
-            // 统一翻 1 张（首翻致命率 1/4，翻掉不回填、越罚越危险）。
+            // 左轮翻牌：顶牌 = deck[pointer]，翻后指针后移（2 张制：首翻 1/2，
+            // 空包后剩余必为致命——下次赌输必死，每人整局最多侥幸 1 次）。
             const revolver = this.revolverDecks[loserId];
             const ptr = this.revolverPointers[loserId] || 0;
             const lethal = ptr < revolver.length ? revolver[ptr] : true;
@@ -387,9 +438,45 @@ class LiarsBarState {
     // 本局统计条目（复盘面板用；纯内存，不进任何持久库）。
     _stat(pid) {
         if (!this.stats[pid]) {
-            this.stats[pid] = { plays: 0, cards: 0, bluffs: 0, caught: 0, challenges: 0, challengeWins: 0, spins: 0, spinsSurvived: 0 };
+            this.stats[pid] = {
+                plays: 0, cards: 0, bluffs: 0, caught: 0, challenges: 0, challengeWins: 0,
+                spins: 0, spinsSurvived: 0, firstAction: null,
+            };
         }
         return this.stats[pid];
+    }
+
+    // ── 单局称号 ──
+
+    // 扫描全员称号达成情况：新增的写入 announcedTitles 并挂到 result.titles
+    // （交互层据此即时播报）；复盘用 titlesOf() 全量读取。每次动作后调用。
+    _collectTitles(result) {
+        if (this.legacyTitles) return; // 旧格式快照恢复的局：历史称号无从考证，整局静默
+        const earned = [];
+        for (const pid of this.players) {
+            const st = this.stats[pid];
+            if (!st) continue;
+            const got = this.announcedTitles[pid] || (this.announcedTitles[pid] = []);
+            for (const rule of TITLE_RULES) {
+                if (got.includes(rule.key)) continue;
+                let hit = false;
+                try { hit = !!rule.check(st, this); } catch { hit = false; }
+                if (hit) {
+                    got.push(rule.key);
+                    earned.push({ playerId: pid, key: rule.key, name: rule.name, quip: rule.quip });
+                }
+            }
+        }
+        if (earned.length) result.titles = earned;
+    }
+
+    titlesOf(playerId) {
+        const got = this.announcedTitles[playerId] || [];
+        return TITLE_RULES.filter(r => got.includes(r.key));
+    }
+
+    revealedCount(rank) {
+        return this.revealedPool.filter(c => c === rank).length;
     }
 
     // 座位顺位上 playerId 的下一位存活者（不含本人）；找不到返回 null。
@@ -421,6 +508,7 @@ class LiarsBarState {
             this.winnerId = [...this.alive][0] || null;
             result.gameEnded = true;
             result.winnerId = this.winnerId;
+            this._collectTitles(result);
             return result;
         }
         // 认输者正在行动回合时，回合交给顺位下一位；否则维持当前行动者。
@@ -437,6 +525,7 @@ class LiarsBarState {
             result.firstPlayerId = this.turnPlayerId;
         }
         this.turnToken += 1;
+        this._collectTitles(result);
         return result;
     }
 
@@ -458,6 +547,9 @@ class LiarsBarState {
             pileCount: this.pileCount,
             playedThisRound: [...this.playedThisRound],
             roundPlays: this.roundPlays,
+            revealedPool: this.revealedPool,
+            announcedTitles: this.announcedTitles,
+            legacyTitles: this.legacyTitles,
             stats: this.stats,
             lastPlay: this.lastPlay,
             turnPlayerId: this.turnPlayerId,
@@ -476,6 +568,15 @@ class LiarsBarState {
         s.revolverPointers = data.revolverPointers || {};
         s.failedChallenges = data.failedChallenges || {};
         s.roundPlays = data.roundPlays || [];
+        s.revealedPool = data.revealedPool || [];
+        if (data.announcedTitles != null) {
+            s.announcedTitles = data.announcedTitles;
+            s.legacyTitles = !!data.legacyTitles;
+        } else {
+            // 旧格式快照（无称号字段）：升级窗口期在局对局，历史称号无从考证。
+            s.announcedTitles = {};
+            s.legacyTitles = true;
+        }
         s.stats = data.stats || {};
         s.alive = new Set(data.alive || data.players);
         s.tableDeck = data.tableDeck || [];
@@ -500,4 +601,5 @@ module.exports = {
     HAND_SIZE,
     MAX_PLAY_CARDS,
     MIN_PLAY_CARDS,
+    TITLE_RULES,
 };

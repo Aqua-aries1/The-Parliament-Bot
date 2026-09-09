@@ -38,6 +38,7 @@ const {
     CARD_LABELS,
     HAND_SIZE,
     MAX_PLAY_CARDS,
+    JOKER,
 } = require('../core/liarsBarEngine');
 
 // ── 常量 ────────────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ const SURRENDER_MUTE_MINUTES = 3;
 const SURRENDER_RENAME_MINUTES = 6;
 const PENALTY_NICKNAME = '🤥 骗子酒馆输家';
 const PENALTY_MUTE_REASON = '骗子酒馆：出局惩罚';
+const REVOLVER_SUSPENSE_MS = 1400; // 翻左轮两拍动画：悬念到揭晓的停顿（引擎状态已定，纯表演）
 const PENALTY_RENAME_APPLY_REASON = '骗子酒馆：出局强制改名';
 const PENALTY_RENAME_RESTORE_REASON = '骗子酒馆：改名惩罚到期，恢复原昵称';
 const PENALTY_RENAME_ENFORCE_REASON = '骗子酒馆：出局强制改名';
@@ -255,6 +257,8 @@ class LiarsBarGame {
         this.resumed = false;
         this.panelColor = 0x9B59B6;
         this.released = false;
+        this.animating = false; // 翻左轮两拍动画进行中（refresh 挡剧透用）
+        this.pendingPenalties = []; // 动画窗口竞态入队的待判惩罚
         this.announcedPlayer = null;
         this.pingCurrentTurn = false;
         // 惩罚完成但游戏还要继续的叙述行，下一张主面板带出。
@@ -314,6 +318,7 @@ class LiarsBarGame {
             penaltyLoserId: this.penaltyLoserId,
             penaltyDeciderId: this.penaltyDeciderId,
             penaltyScope: this.penaltyScope,
+            pendingPenalties: this.pendingPenalties || [],
             pendingAnnouncement: this.pendingAnnouncement,
             panelIds: this.panels.map(entry => entry?.message?.id).filter(Boolean),
             state: this.state ? this.state.serialize() : null,
@@ -353,6 +358,7 @@ class LiarsBarGame {
         game.penaltyLoserId = snapshot.penaltyLoserId || null;
         game.penaltyDeciderId = snapshot.penaltyDeciderId || null;
         game.penaltyScope = snapshot.penaltyScope === 'surrender' ? 'surrender' : 'normal';
+        game.pendingPenalties = Array.isArray(snapshot.pendingPenalties) ? [...snapshot.pendingPenalties] : [];
         game.pendingAnnouncement = snapshot.pendingAnnouncement || '';
         game.settlementArmed = false;
         game.participants = Array.isArray(snapshot.participants) ? [...snapshot.participants] : game.participants;
@@ -598,8 +604,10 @@ class LiarsBarGame {
         await this.act(interaction, 'play_cards', expectedToken, { cardIndexes: pending.indexes });
     }
 
-    async afterActionLocked(result) {
+    async afterActionLocked(result, actionOpts = null) {
+        const forcedNote = actionOpts?.forcedNote || null;
         this.lastEvent = this.safeFormatResult(result);
+        if (forcedNote && result.action !== 'challenge') this.lastEvent += `\n${forcedNote}`;
         this.panelColor = this.resultColor(result);
         if (result.action === 'play_cards') {
             // 出牌：独立播报面板（盖牌张数 + 用时心理 tell）+ 新主面板（ping 下家）。
@@ -617,7 +625,21 @@ class LiarsBarGame {
         if (result.action === 'challenge') {
             // 质疑：开牌 + 左轮翻牌播报，然后要么出局惩罚结算面板，要么新一轮主面板。
             this.turnStartedAt = Date.now();
-            await this.sendBroadcastLocked({ title: result.liar ? '🤥 骗子被抓！' : (result.pardonedChallenge ? '😬 质疑失败（首次失手免翻）' : '😬 质疑失败') });
+            if (result.pardonedChallenge) {
+                // 首次失手免翻：无翻牌可演，一次发完（含称号）。
+                this.lastEvent = this.safeFormatResult(result);
+                if (forcedNote) this.lastEvent += `\n${forcedNote}`;
+                await this.sendBroadcastLocked({ title: '😬 质疑失败（首次失手免翻）' });
+            } else {
+                // 两拍动画：先发开牌判定（翻牌结果压住不发），悬念播报停 1.4s 后
+                // 原位编辑出翻牌结果——引擎状态此刻已定，纯表演，无竞态。
+                // 颜色也要防剧透：第一拍只反映"抓没抓到"（致命红留给揭晓拍）。
+                this.panelColor = result.liar ? 0xE67E22 : 0x2ECC71;
+                this.lastEvent = this.safeFormatResult(result, { revolverHold: true });
+                if (forcedNote) this.lastEvent += `\n${forcedNote}`;
+                await this.sendBroadcastLocked({ title: result.liar ? '🤥 骗子被抓！' : '😬 质疑失败' });
+                await this.sendRevolverRevealLocked(result, forcedNote);
+            }
             if (result.eliminatedId != null) {
                 // 惩罚决定人 = 对决的另一方（质疑者/被开牌人中不是输家的那个）；
                 // 终局性出局（如 2 人局）也要先惩罚再结算，决定人 = 最终胜者。
@@ -627,8 +649,11 @@ class LiarsBarGame {
                 // 决定人若已出局（如被开的是认输者留下的声明），交给座位顺位兜底。
                 if (deciderId != null && !this.state.alive.has(deciderId)) deciderId = null;
                 await this.beginEliminationPenaltyLocked(result.eliminatedId, 'normal', deciderId);
-            } else {
+            } else if (result.pardonedChallenge) {
+                // 两拍揭晓消息本身已带新一轮信息，只给免翻路径补一条过场播报。
                 await this.sendBroadcastLocked({ title: '🎴 新一轮' });
+                await this.renderLocked();
+            } else {
                 await this.renderLocked();
             }
             return;
@@ -637,8 +662,24 @@ class LiarsBarGame {
         await this.renderLocked();
     }
 
+    // 认输/失格等手工拼 lastEvent 的路径：补挂本动作达成的称号（漏了就永远不播）。
+    appendTitles(result) {
+        for (const t of result?.titles || []) {
+            this.lastEvent += `\n🏆 **${this.shortName(t.playerId)}** 达成 **${t.name}**——${t.quip}`;
+        }
+    }
+
     // 出局惩罚：惩罚决定人默认 = 座位顺位（players 数组）上出局者的下一位存活者。
     async beginEliminationPenaltyLocked(loserId, scope, deciderId = null) {
+        // 竞态守卫：已有未落定的惩罚时不可覆盖（翻左轮动画窗口在锁外，认输/失格
+        // 可抢先入场）——把本次出局排队，由 resumeAfterPenaltyLocked 逐一补判，
+        // 保证「每个出局者都当场受罚一次」不因并发而吞罚。
+        if (this.penaltyPending && !this.penaltyApplied) {
+            if (loserId != null) {
+                (this.pendingPenalties ||= []).push({ loserId, scope, deciderId });
+            }
+            return;
+        }
         this.penaltyPending = true;
         this.penaltyApplied = false;
         this.settlementArmed = false;
@@ -664,6 +705,12 @@ class LiarsBarGame {
     async resumeAfterPenaltyLocked() {
         const state = this.state;
         if (!state) return;
+        // 排队中的惩罚逐一补判（动画窗口竞态入队；补判后可能再排队/终局，连环走本入口）。
+        if (this.pendingPenalties?.length) {
+            const next = this.pendingPenalties.shift();
+            await this.beginEliminationPenaltyLocked(next.loserId, next.scope, next.deciderId);
+            return;
+        }
         if (state.phase === 'ended') {
             this.status = 'ended';
             this.finalWinnerId = state.winnerId;
@@ -677,8 +724,9 @@ class LiarsBarGame {
             const pid = [...this.pendingInvalidations].find(id => state.players.includes(id) && state.alive.has(id));
             if (pid) {
                 this.pendingInvalidations.delete(pid);
-                state.applyForfeit(pid);
+                const outcome = state.applyForfeit(pid);
                 this.lastEvent = `🏳️ **${this.shortName(pid)}** 从酒馆消失了，判负离席。`;
+                this.appendTitles(outcome);
                 this.panelColor = 0x9B59B6;
                 await this.sendBroadcastLocked({ title: '🏳️ 玩家失格' });
                 await this.beginEliminationPenaltyLocked(pid, 'surrender');
@@ -699,6 +747,10 @@ class LiarsBarGame {
         // 鉴权：仅本局玩家可刷新（路人乱点会造成面板无谓重发/刷屏）。
         if (!this.participants.includes(interaction.user?.id)) {
             rejection = '只有本局玩家可以刷新面板。';
+        }
+        // 翻左轮两拍动画期间主面板渲染的是战后状态——提前刷新会剧透翻牌结果。
+        if (!rejection && this.animating) {
+            rejection = '翻左轮动画马上结束，半秒后再刷新。';
         }
         let allowed = false;
         if (!rejection) {
@@ -754,6 +806,7 @@ class LiarsBarGame {
             return;
         }
         this.lastEvent = `🏳️ **${this.shortName(result.eliminatedId)}** 认输离席。\n${flavor('surrender')}`;
+        this.appendTitles(result);
         this.panelColor = 0x9B59B6;
         await this.sendBroadcastLocked({ title: '🏳️ 认输离席' });
         if (result.gameEnded) {
@@ -855,8 +908,7 @@ class LiarsBarGame {
         });
         if (result) {
             const forced = result.action === 'challenge' ? '（⏰ 超时自动质疑）' : '（⏰ 超时自动出牌）';
-            this.lastEvent = `${this.safeFormatResult(result)}\n${forced}`;
-            await this.afterActionLocked(result);
+            await this.afterActionLocked(result, { forcedNote: forced });
         } else {
             await this.armTimerLocked();
         }
@@ -1210,18 +1262,21 @@ class LiarsBarGame {
         this.armTimerLocked();
     }
 
-    async sendBroadcastLocked({ title }) {
-        if (!this.lastEvent) return;
-        if (typeof this.channel?.send !== 'function') return;
-        const embed = new EmbedBuilder()
+    broadcastEmbed(title) {
+        return new EmbedBuilder()
             .setTitle(title)
             .setColor(this.panelColor)
             .setAuthor({ name: `${this.title} · ${this.modeText()}` })
             .setDescription(this.lastEvent);
+    }
+
+    async sendBroadcastLocked({ title }) {
+        if (!this.lastEvent) return;
+        if (typeof this.channel?.send !== 'function') return;
         let message;
         try {
             message = await this.channel.send({
-                embeds: [embed],
+                embeds: [this.broadcastEmbed(title)],
                 allowedMentions: { parse: [], users: [], repliedUser: false },
             });
         } catch (error) {
@@ -1296,7 +1351,7 @@ class LiarsBarGame {
         embed.setDescription(
             `**${this.shortName(this.initiatorId)}** 摆开了一张酒馆牌桌。\n\n`
             + '**怎么玩**：每轮亮一张「桌面点数」，每人盖一手牌（1-3 张）声称全是它——可以撒谎；'
-            + '任何人都能**质疑（=开牌：翻开上一手验证真假）**——抓到骗子，骗子翻左轮；质疑失手首次只记警告，再失手才翻（首翻 1/4 致命，越翻越危险）：空包侥幸，致命出局。\n\n'
+            + '任何人都能**质疑（=开牌：翻开上一手验证真假）**——抓到骗子，骗子翻左轮；质疑失手首次只记警告，再失手才翻（左轮对半开：首翻一半致命，翻到空包下一发必死）：空包侥幸，致命出局。\n\n'
             + `🪑 已入座（${this.participants.length}/${MAX_PLAYERS}）：${seated}\n\n`
             + `🔨 每个出局者都当场受罚：抓到的人（或顺位存活者）给输家选 🔇 禁言 ${PENALTY_MUTE_MINUTES} 分 / ✏️ 改名 ${PENALTY_RENAME_MINUTES} 分；活到最后的唯一幸存者是胜者，不受罚。\n\n`
             + `⏳ <t:${deadline}:R> 后桌子自动收摊；发起人可随时点 **🎬 开局**（≥${MIN_PLAYERS} 人）。`
@@ -1374,6 +1429,10 @@ class LiarsBarGame {
         if (state.roundPlays?.length) {
             parts.push(`📜 本轮声明：${state.roundPlays.map(rp => `${this.shortName(rp.playerId)}×${rp.count}`).join(' → ')}（可质疑最后一手）`);
         }
+        // 整局明牌池：每次质疑开牌翻出的牌永久公示——数牌推理人人可用。
+        if ((state.revealedPool || []).length) {
+            parts.push(`📋 已明牌：K×${state.revealedCount('K')} · Q×${state.revealedCount('Q')} · A×${state.revealedCount('A')} · 🃏×${state.revealedCount(JOKER)}（质疑开牌翻出的牌）`);
+        }
         if (state.lastPlay != null) {
             parts.push(`**${this.shortName(state.lastPlay.playerId)}** 盖了 **${state.lastPlay.count}** 张`);
         } else {
@@ -1391,7 +1450,7 @@ class LiarsBarGame {
             const alive = state.alive.has(playerId);
             const fname = !alive ? '💀 已出局' : (playerId === current ? '▶️ 行动中' : '等待');
             const odds = state.lethalOdds(playerId);
-            // 中弹率用分数直观呈现（1/4、1/3、1/2、必死），比压力条干净。
+            // 中弹率用分数直观呈现（1/2、必死），比压力条干净。
             const denom = Math.max(1, Math.round(1 / odds));
             const oddsText = odds >= 1 ? '必死' : `1/${denom}（${(odds * 100).toFixed(0)}%）`;
             const played = state.playedThisRound.has(playerId) ? '✅ 已盖牌' : '⬜ 未盖';
@@ -1582,8 +1641,8 @@ class LiarsBarGame {
                 + '　• 被抓的骗子翻 1 张左轮；质疑失败首次免翻只记警告，再次失手才翻；\n'
                 + '　• 第一手不可质疑；全员盖完/无牌可盖时强制开牌。\n\n'
                 + '**🔫 出局惩罚（左轮牌堆）**\n'
-                + '左轮翻牌者（被抓的骗子 / 失手两次的质疑者）翻自己专属左轮牌堆顶牌（1 致命 + 3 空包共 4 张，'
-                + '统一翻 1 张、翻掉不回填，越罚越危险——首翻 1/4，第 4 发必死）：\n'
+                + '左轮翻牌者（被抓的骗子 / 失手两次的质疑者）翻自己专属左轮牌堆顶牌（1 致命 + 1 空包共 2 张，'
+                + '翻掉不回填）：首翻对半开——空包侥幸后剩余必为致命，**下次赌输必死**，每人整局最多侥幸 1 次：\n'
                 + '　• 空包——侥幸存活，继续下一轮；\n'
                 + `　• 致命——出局，并由抓到的人选择 🔇 禁言 ${PENALTY_MUTE_MINUTES} 分 / ✏️ 改名 ${PENALTY_RENAME_MINUTES} 分`
                 + `（${PENALTY_SETTLEMENT_SECONDS} 秒不选自动禁言 ${PENALTY_AUTO_MUTE_MINUTES} 分）。\n\n`
@@ -1594,7 +1653,7 @@ class LiarsBarGame {
                 + '**⚠️ 与原版 Liar\'s Bar 的差异**（玩过原版的请留意）：\n'
                 + '　• **每轮每人一手牌**：盖过就得等开牌（原版可多手）；\n'
                 + '　• **质疑全桌开放**：任何玩家可抢先质疑上一手（原版仅下家）；\n'
-                + '　• **左轮 1 实 3 空共 4 张**（原版 1 实 5 空共 6 张）——节奏更快、压力更陡；\n'
+                + '　• **左轮 1 实 1 空共 2 张**（原版 1 实 5 空共 6 张）——对半开，侥幸只有一次，节奏极快；\n'
                 + '　• 出局惩罚由「左轮必死」改为左轮牌堆翻牌 + 抓到的人选禁言/改名；\n'
                 + '　• 每轮手牌固定 5 张（原版按人数扩堆）。'
             );
@@ -1684,6 +1743,16 @@ class LiarsBarGame {
             }).filter(Boolean);
             if (lines.length) embed.addFields({ name: '📊 本局复盘', value: lines.join('\n').slice(0, 1024) });
         }
+        // 颁奖礼：本局达成的毒舌称号（引擎派生，零持久化）。
+        const awards = recapState
+            ? recapState.players.flatMap(pid => recapState.titlesOf(pid).map(r => ({
+                pid, name: r.name,
+            })))
+            : [];
+        if (awards.length) {
+            const lines = awards.map(a => `${a.name}　${this.plainName(a.pid)}`);
+            embed.addFields({ name: '🏅 颁奖礼', value: lines.join('\n').slice(0, 1024) });
+        }
         return embed;
     }
 
@@ -1705,16 +1774,16 @@ class LiarsBarGame {
 
     // ── 叙述 ──
 
-    safeFormatResult(result) {
+    safeFormatResult(result, opts = null) {
         try {
-            return this.formatResult(result);
+            return this.formatResult(result, opts);
         } catch (error) {
             logDiscordFailure(this, 'format-result', error, result.actorId);
             return `⚠️ **${this.shortName(result.actorId)}** 的操作已完成，但事件描述生成失败。`;
         }
     }
 
-    formatResult(result) {
+    formatResult(result, opts = null) {
         const actor = this.shortName(result.actorId);
         const lines = [];
         if (result.action === 'play_cards') {
@@ -1727,6 +1796,10 @@ class LiarsBarGame {
                 lines.push(`💥 ${accused} 撒谎了`);
             } else {
                 lines.push(`😮 ${accused} 是诚实的——${actor} 冤枉好人`);
+            }
+            if (opts?.revolverHold) {
+                // 两拍动画第一拍：翻牌结果与新一轮信息压住不发，由揭晓播报接手。
+                return lines.join('\n');
             }
             const loser = this.shortName(result.loserId);
             if (result.pardonedChallenge) {
@@ -1742,7 +1815,67 @@ class LiarsBarGame {
         } else if (result.action === 'forfeit') {
             lines.push(`🏳️ **${this.shortName(result.eliminatedId)}** 离开了酒馆。`);
         }
+        // 单局称号即时播报：达成即挂尾（复盘另有颁奖礼）。
+        for (const t of result.titles || []) {
+            lines.push(`🏆 **${this.shortName(t.playerId)}** 达成 **${t.name}**——${t.quip}`);
+        }
         return lines.join('\n');
+    }
+
+    // 翻左轮揭晓文案（两拍动画第二拍）：翻牌结果 + 出局 + 称号 + 新一轮。
+    formatRevolverReveal(result, forcedNote = null) {
+        const loser = this.shortName(result.loserId);
+        const lines = [];
+        const flips = (result.revolverFlips || []).map(f => (f ? '💀致命' : '空包'));
+        lines.push(`🔫 ${loser}：${flips.join(' → ')}`);
+        if (result.lethal) lines.push(`💀 **${loser} 出局**`);
+        if (forcedNote) lines.push(forcedNote);
+        for (const t of result.titles || []) {
+            lines.push(`🏆 **${this.shortName(t.playerId)}** 达成 **${t.name}**——${t.quip}`);
+        }
+        if (!result.gameEnded && result.newRound) {
+            lines.push(`\n🎴 新一轮：桌面 **${rankLabel(result.newTableRank)}**，先手 ${this.shortName(result.firstPlayerId)}。`);
+        }
+        return lines.join('\n');
+    }
+
+    // 两拍动画第二拍：先发悬念广播，停顿后原位编辑出翻牌结果。
+    // animating 置位期间锁外可被其他交互插入（refresh/认输）——refresh 靠它挡剧透。
+    async sendRevolverRevealLocked(result, forcedNote = null) {
+        if (typeof this.channel?.send !== 'function') return;
+        this.animating = true;
+        try {
+            this.lastEvent = `🔫 **${this.shortName(result.loserId)}** 把左轮抵上太阳穴，扣下扳机……`;
+            let message = null;
+            try {
+                message = await this.channel.send({
+                    embeds: [this.broadcastEmbed('🔫 翻左轮……')],
+                    allowedMentions: { parse: [], users: [], repliedUser: false },
+                });
+            } catch (error) {
+                logDiscordFailure(this, 'broadcast-revolver-suspense', error);
+            }
+            if (message) this.panels.push({ message, interactive: false });
+            await new Promise(resolve => setTimeout(resolve, REVOLVER_SUSPENSE_MS));
+            this.panelColor = this.resultColor(result); // 揭晓拍恢复全量结果色（致命红）
+            this.lastEvent = this.formatRevolverReveal(result, forcedNote);
+            if (message) {
+                try {
+                    await message.edit({
+                        embeds: [this.broadcastEmbed('🔫 扳机扣下！')],
+                        allowedMentions: { parse: [], users: [], repliedUser: false },
+                    });
+                } catch (error) {
+                    logDiscordFailure(this, 'broadcast-revolver-reveal', error);
+                    await this.sendBroadcastLocked({ title: '🔫 扳机扣下！' }); // 编辑失败兜底：补发结果
+                }
+            } else {
+                await this.sendBroadcastLocked({ title: '🔫 扳机扣下！' });
+            }
+            await this.pruneWindowLocked();
+        } finally {
+            this.animating = false;
+        }
     }
 
     // 质疑发生时的桌面点数已由引擎带在 result.challengeTableRank。
@@ -2040,6 +2173,7 @@ async function handleLiarsBarMemberInvalidated(game, userId) {
             && game.state.players.includes(userId) && game.state.alive.has(userId)) {
             const result = game.state.applyForfeit(userId);
             game.lastEvent = `🏳️ **${game.shortName(userId)}** 从酒馆消失了，判负离席。\n${flavor('surrender')}`;
+            game.appendTitles(result);
             game.panelColor = 0x9B59B6;
             // 无论是否终局：每个出局者都当场惩罚一次（终局时决定人=唯一存活者即胜者）。
             outcome = 'forfeit_penalty';

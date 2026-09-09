@@ -65,6 +65,43 @@ function defaultActionResult(action, actorId) {
     };
 }
 
+// 单局称号（毒舌整活型）：纯派生规则——从本局 stats/状态推导，零持久化。
+// check(st, state, pid) 返回 true 即达成；name/quip 由交互层原样渲染。
+const TITLE_RULES = [
+    {
+        key: 'shensuanzi', name: '🔮 神算子',
+        check: st => (st.spotOnHits || 0) >= 1,
+        quip: '心算能力严重超标，建议禁赛。',
+    },
+    {
+        key: 'suoha', name: '🎰 梭哈鬼才',
+        check: st => (st.spotOnTries || 0) >= 2 && (st.spotOnHits || 0) === 0,
+        quip: '精准开牌零命中，勇气可嘉，数学拉胯。',
+    },
+    {
+        key: 'mangfu', name: '🪓 莽夫',
+        check: st => (st.opensLost || 0) >= 2,
+        quip: '开牌全靠信仰，输得相当稳定。',
+    },
+    {
+        key: 'tiezui', name: '🗿 铁嘴',
+        check: st => (st.opensWon || 0) >= 2,
+        quip: '开一次赚一次，骗子里的卷王。',
+    },
+    {
+        key: 'guhui', name: '🦴 骨灰级玩家',
+        // 同一动作多人归零时按 _loseDie 调用序（≈座位顺位） tiebreak。
+        check: (st, state, pid) => (state.eliminationOrder || [])[0] === pid,
+        quip: '第一个出局，运气含量遥遥领先。',
+    },
+    {
+        key: 'mingying', name: '🍀 命硬',
+        check: (st, state, pid) => state.phase === 'ended' && state.winnerId === pid
+            && (state.dice?.[pid] || []).length === 1,
+        quip: '靠全场最后一颗骰子躺赢——胜之不武，但赢就是赢。',
+    },
+];
+
 class LiarsDiceState {
     constructor(playerIds, { rng = null, firstPlayerId = null } = {}) {
         const unique = [...new Set(playerIds)];
@@ -80,6 +117,9 @@ class LiarsDiceState {
         this.turnToken = 0;
         this.roundNumber = 0;
         this.spotOnCooldown = null; // spot_on 失手者冷却一轮
+        this.eliminationOrder = []; // 出局顺序（称号「骨灰级玩家」用）
+        this.announcedTitles = {};  // playerId -> 已达成称号 key 列表（防重复播报）
+        this.legacyTitles = false;  // 旧格式快照恢复的局置真：称号系统整局静默
         this.stats = {};            // playerId -> 本局统计（复盘用，纯内存）
         const startDice = START_DICE_BY_PLAYERS[unique.length] ?? DEFAULT_START_DICE;
         for (const pid of unique) this.dice[pid] = new Array(startDice).fill(1);
@@ -198,6 +238,7 @@ class LiarsDiceState {
         else if (action === 'open') result = this._open(actorId);
         else if (action === 'spot_on') result = this._spotOn(actorId);
         else throw new InvalidAction('未知操作。');
+        this._collectTitles(result);
         this.turnToken += 1;
         return result;
     }
@@ -240,7 +281,38 @@ class LiarsDiceState {
         this.dice[playerId] = (this.dice[playerId] || []).slice(0, -1);
         if (this.diceCount(playerId) > 0) return false;
         this.alive.delete(playerId);
+        this.eliminationOrder.push(playerId);
         return true;
+    }
+
+    // ── 单局称号 ──
+
+    // 扫描全员称号达成情况：新增的写入 announcedTitles 并挂到 result.titles
+    // （交互层据此即时播报）；复盘用 titlesOf() 全量读取。每次动作后调用。
+    // 注意：stats 缺失按空对象处理——从未行动就认输的首个出局者也能领「骨灰级玩家」，
+    // 且不会因 continue 短路把该称号永久堵死给全场。
+    _collectTitles(result) {
+        if (this.legacyTitles) return; // 旧格式快照恢复的局：历史称号无从考证，整局静默
+        const earned = [];
+        for (const pid of this.players) {
+            const st = this.stats[pid] || {};
+            const got = this.announcedTitles[pid] || (this.announcedTitles[pid] = []);
+            for (const rule of TITLE_RULES) {
+                if (got.includes(rule.key)) continue;
+                let hit = false;
+                try { hit = !!rule.check(st, this, pid); } catch { hit = false; }
+                if (hit) {
+                    got.push(rule.key);
+                    earned.push({ playerId: pid, key: rule.key, name: rule.name, quip: rule.quip });
+                }
+            }
+        }
+        if (earned.length) result.titles = earned;
+    }
+
+    titlesOf(playerId) {
+        const got = this.announcedTitles[playerId] || [];
+        return TITLE_RULES.filter(r => got.includes(r.key));
     }
 
     // 全部扣骰完成后统一判定终局。返回 gameEnded。
@@ -349,11 +421,13 @@ class LiarsDiceState {
         result.eliminatedId = actorId;
         this.alive.delete(actorId);
         this.dice[actorId] = [];
+        this.eliminationOrder.push(actorId);
         if (this.alive.size <= 1) {
             this.phase = 'ended';
             this.winnerId = [...this.alive][0] || null;
             result.gameEnded = true;
             result.winnerId = this.winnerId;
+            this._collectTitles(result);
             return result;
         }
         if (this.turnPlayerId === actorId) {
@@ -361,6 +435,7 @@ class LiarsDiceState {
             this.turnPlayerId = next != null ? next : this.turnPlayerId;
         }
         this.turnToken += 1;
+        this._collectTitles(result);
         return result;
     }
 
@@ -378,6 +453,9 @@ class LiarsDiceState {
             turnToken: this.turnToken,
             roundNumber: this.roundNumber,
             spotOnCooldown: this.spotOnCooldown,
+            eliminationOrder: this.eliminationOrder,
+            announcedTitles: this.announcedTitles,
+            legacyTitles: this.legacyTitles,
             stats: this.stats,
         };
     }
@@ -393,6 +471,15 @@ class LiarsDiceState {
         s.turnToken = data.turnToken || 0;
         s.roundNumber = data.roundNumber || 1;
         s.spotOnCooldown = data.spotOnCooldown ?? null;
+        s.eliminationOrder = data.eliminationOrder || [];
+        if (data.announcedTitles != null) {
+            s.announcedTitles = data.announcedTitles;
+            s.legacyTitles = !!data.legacyTitles;
+        } else {
+            // 旧格式快照（无称号字段）：升级窗口期在局对局，历史称号无从考证。
+            s.announcedTitles = {};
+            s.legacyTitles = true;
+        }
         s.stats = data.stats || {};
         return s;
     }
@@ -407,4 +494,5 @@ module.exports = {
     MIN_FACE,
     START_DICE_BY_PLAYERS,
     DEFAULT_START_DICE,
+    TITLE_RULES,
 };

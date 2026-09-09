@@ -61,7 +61,7 @@ guild.members.fetch = async id => guild.members.cache.get(id) || null;
         check(s.alive.size === 3, '全员存活');
         check(s.tableRank != null, `桌面点数已翻出：${s.tableRank}`);
         check(s.handCards('a').length === 5, '每人 5 张手牌');
-        check(s.revolverDecks['a'].length === 4, '左轮堆 4 张（1 致命 3 空包）');
+        check(s.revolverDecks['a'].length === 2, '左轮堆 2 张（1 致命 1 空包）');
 
         // 第一手不可质疑。
         let threw = false;
@@ -223,8 +223,10 @@ guild.members.fetch = async id => guild.members.cache.get(id) || null;
         check(game.status === 'ended', `牌局打完终局（guard=${guard}，惩罚结算 ${penaltyRounds} 次）`);
         check(game.finalWinnerId != null, `胜者：${game.finalWinnerId}`);
 
-        // 快照应已清理。
+        // 快照应已清理（store 是内存对象 + 异步写队列：先 flush 再读盘，否则读到旧帧）。
         const fs = require('node:fs');
+        const resumeStore = require(path.join(root, 'src/modules/mystery/utils/liarsBarResumeStore'));
+        await resumeStore.flush();
         const pathF = path.join(root, 'data', 'mystery', 'liarsBarActiveGames.json');
         if (fs.existsSync(pathF)) {
             const data = JSON.parse(fs.readFileSync(pathF, 'utf8'));

@@ -480,8 +480,9 @@ class LiarsDiceGame {
         await this.afterActionLocked(result);
     }
 
-    async afterActionLocked(result) {
+    async afterActionLocked(result, actionOpts = null) {
         this.lastEvent = this.safeFormatResult(result);
+        if (actionOpts?.forcedNote) this.lastEvent += `\n${actionOpts.forcedNote}`;
         this.panelColor = this.resultColor(result);
         if (result.action === 'bid') {
             const seconds = this.turnStartedAt
@@ -528,7 +529,22 @@ class LiarsDiceGame {
 
     // ── 出局惩罚（与酒馆同构） ──
 
+    // 认输/失格等手工拼 lastEvent 的路径：补挂本动作达成的称号（漏了就永远不播）。
+    appendTitles(result) {
+        for (const t of result?.titles || []) {
+            this.lastEvent += `\n🏆 **${this.shortName(t.playerId)}** 达成 **${t.name}**——${t.quip}`;
+        }
+    }
+
     async beginEliminationPenaltyLocked(loserId, scope, deciderId = null) {
+        // 竞态守卫：已有未落定的惩罚时不可覆盖（认输/失格可在动画窗口内抢先入场）——
+        // 排队进 penaltyQueue，由 resumeAfterPenaltyLocked 补判，保证不吞罚。
+        if (this.penaltyPending && !this.penaltyApplied) {
+            if (loserId != null) {
+                (this.penaltyQueue ||= []).push({ loserId, deciderId, scope });
+            }
+            return;
+        }
         this.penaltyPending = true;
         this.penaltyApplied = false;
         this.settlementArmed = false;
@@ -563,7 +579,7 @@ class LiarsDiceGame {
                 this.pendingAnnouncement = '';
                 await this.sendBroadcastLocked({ title: '🔨 下一位出局者' });
             }
-            await this.beginEliminationPenaltyLocked(next.loserId, 'normal', next.deciderId);
+            await this.beginEliminationPenaltyLocked(next.loserId, next.scope || 'normal', next.deciderId);
             return;
         }
         // 惩罚结算期间离席的玩家：队列清空后补判失格（每个出局者都当场受罚一次）。
@@ -571,8 +587,9 @@ class LiarsDiceGame {
             const pid = [...this.pendingInvalidations].find(id => state.players.includes(id) && state.alive.has(id));
             if (pid) {
                 this.pendingInvalidations.delete(pid);
-                state.applyForfeit(pid);
+                const outcome = state.applyForfeit(pid);
                 this.lastEvent = `🏳️ **${this.shortName(pid)}** 从牌桌消失了，判负离席。`;
+                this.appendTitles(outcome);
                 this.panelColor = 0x11806A;
                 await this.sendBroadcastLocked({ title: '🏳️ 玩家失格' });
                 await this.beginEliminationPenaltyLocked(pid, 'surrender');
@@ -628,6 +645,7 @@ class LiarsDiceGame {
             return;
         }
         this.lastEvent = `🏳️ **${this.shortName(result.eliminatedId)}** 认输离席。`;
+        this.appendTitles(result);
         this.panelColor = 0x11806A;
         await this.sendBroadcastLocked({ title: '🏳️ 认输离席' });
         if (result.gameEnded) {
@@ -689,8 +707,7 @@ class LiarsDiceGame {
             }
         });
         if (result) {
-            this.lastEvent = `${this.safeFormatResult(result)}\n（⏰ 超时自动行动）`;
-            await this.afterActionLocked(result);
+            await this.afterActionLocked(result, { forcedNote: '（⏰ 超时自动行动）' });
         } else {
             await this.armTimerLocked();
         }
@@ -1687,6 +1704,16 @@ class LiarsDiceGame {
             }).filter(Boolean);
             if (lines.length) embed.addFields({ name: '📊 本局复盘', value: lines.join('\n').slice(0, 1024) });
         }
+        // 颁奖礼：本局达成的毒舌称号（引擎派生，零持久化）。
+        const awards = recapState
+            ? recapState.players.flatMap(pid => recapState.titlesOf(pid).map(r => ({
+                pid, name: r.name,
+            })))
+            : [];
+        if (awards.length) {
+            const lines = awards.map(a => `${a.name}　${this.plainName(a.pid)}`);
+            embed.addFields({ name: '🏅 颁奖礼', value: lines.join('\n').slice(0, 1024) });
+        }
         return embed;
     }
 
@@ -1751,6 +1778,10 @@ class LiarsDiceGame {
             }
         } else if (result.action === 'forfeit') {
             lines.push(`🏳️ **${this.shortName(result.eliminatedId)}** 离开了牌桌。`);
+        }
+        // 单局称号即时播报：达成即挂尾（复盘另有颁奖礼）。
+        for (const t of result.titles || []) {
+            lines.push(`🏆 **${this.shortName(t.playerId)}** 达成 **${t.name}**——${t.quip}`);
         }
         return lines.join('\n');
     }
@@ -2044,8 +2075,9 @@ async function handleLiarsDiceMemberInvalidated(game, userId) {
         }
         if (game.status === 'playing' && game.state
             && game.state.players.includes(userId) && game.state.alive.has(userId)) {
-            game.state.applyForfeit(userId);
+            const result = game.state.applyForfeit(userId);
             game.lastEvent = `🏳️ **${game.shortName(userId)}** 从牌桌消失了，判负离席。`;
+            game.appendTitles(result);
             game.panelColor = 0x11806A;
             outcome = 'forfeit_penalty';
         }

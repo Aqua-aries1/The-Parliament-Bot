@@ -45,3 +45,13 @@
 - 惩罚时长是模块内常量（`penaltyMinutes`），无 env / 配置依赖。
 - 2026-09-08 快照存储去重：liars 两个 store = `devilRouletteResumeStore` 工厂 + 不同 `filePath` / `logTag`，
   三份同构代码收敛为一份。
+
+## 引擎快照字段（2026-09-09 增补，restore 对缺字段旧快照全部降级兼容）
+
+- 酒馆：`revealedPool`（整局明牌池）、`announcedTitles`（已达成称号 key）、`legacyTitles`
+  （旧格式快照恢复置真 → 称号系统整局静默，防重报/错发）、stats 增 `firstAction`。
+- 骰子：`eliminationOrder`（出局顺序）、`announcedTitles` / `legacyTitles` 同上。
+- 左轮牌堆常量 `buildRevolverDeck()` = 2 张（1 致命 1 空包）——恢复对局时旧快照里的
+  4 张牌堆原样续用，不迁移。
+- 交互层新增宿主无关能力：翻左轮两拍动画、称号即时播报/颁奖礼、明牌面板行、
+  `pendingPenalties`（酒馆）/`penaltyQueue`（骰子）竞态惩罚队列——全部在 services 层，无宿主依赖。
